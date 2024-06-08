@@ -226,7 +226,8 @@ const driveLetterRegex = /(?<=^\/?)([a-zA-Z])(?=:\/)/;
 const userConfigRegex = /^user\.(name|email) (.*)$/gm;
 const mappedAuthorRegex = /(.+)\s<(.+)>/;
 const stashSummaryRegex =
-	/(?:(?:(?<wip>WIP) on|On) (?<onref>[^/](?!.*\/\.)(?!.*\.\.)(?!.*\/\/)(?!.*@\{)[^\000-\037\177 ~^:?*[\\]+[^./]):\s*)?(?<summary>.*)$/s;
+	// eslint-disable-next-line no-control-regex
+	/(?:(?:(?<wip>WIP) on|On) (?<onref>[^/](?!.*\/\.)(?!.*\.\.)(?!.*\/\/)(?!.*@\{)[^\x00-\x1F\x7F ~^:?*[\\]+[^./]):\s*)?(?<summary>.*)$/s;
 
 const reflogCommands = ['merge', 'pull'];
 
@@ -1464,10 +1465,7 @@ export class LocalGitProvider implements GitProvider, Disposable {
 			} else {
 				[branchName, remoteName] = getBranchNameAndRemote(options.reference);
 			}
-			upstreamName =
-				this.container.prereleaseOrDebugging || options.publish != null
-					? getBranchTrackingWithoutRemote(options.reference)
-					: undefined;
+			upstreamName = getBranchTrackingWithoutRemote(options.reference);
 		} else {
 			const branch = await this.getBranch(repoPath);
 			if (branch == null) return;
@@ -1560,7 +1558,7 @@ export class LocalGitProvider implements GitProvider, Disposable {
 			await this.git.pull(repoPath, {
 				branch: branchName,
 				remote: remoteName,
-				upstream: this.container.prereleaseOrDebugging ? getBranchTrackingWithoutRemote(branch) : undefined,
+				upstream: getBranchTrackingWithoutRemote(branch),
 				rebase: options?.rebase,
 				tags: options?.tags,
 			});
