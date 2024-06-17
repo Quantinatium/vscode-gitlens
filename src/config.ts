@@ -80,6 +80,8 @@ export interface Config {
 	readonly detectNestedRepositories: boolean;
 	readonly experimental: {
 		readonly generateCommitMessagePrompt: string;
+		readonly generateCloudPatchMessagePrompt: string;
+		readonly generateCodeSuggestionMessagePrompt: string;
 	};
 	readonly fileAnnotations: {
 		readonly preserveWhileEditing: boolean;
@@ -88,13 +90,14 @@ export interface Config {
 	};
 	readonly launchpad: {
 		readonly allowMultiple: boolean;
+		readonly ignoredOrganizations: string[];
 		readonly ignoredRepositories: string[];
 		readonly staleThreshold: number | null;
 		readonly indicator: {
 			readonly enabled: boolean;
 			readonly openInEditor: boolean;
 			readonly icon: 'default' | 'group';
-			readonly label: false | 'item';
+			readonly label: false | 'item' | 'counts';
 			readonly useColors: boolean;
 			readonly groups: ('mergeable' | 'blocked' | 'needs-review' | 'follow-up')[];
 			readonly polling: {
@@ -375,27 +378,28 @@ export interface GraphConfig {
 	readonly dateStyle: DateStyle | null;
 	readonly defaultItemLimit: number;
 	readonly dimMergeCommits: boolean;
+	readonly highlightRowsOnRefHover: boolean;
+	readonly layout: 'editor' | 'panel';
 	readonly minimap: {
 		readonly enabled: boolean;
 		readonly dataType: 'commits' | 'lines';
 		readonly additionalTypes: GraphMinimapMarkersAdditionalTypes[];
 	};
-	readonly highlightRowsOnRefHover: boolean;
-	readonly layout: 'editor' | 'panel';
-	readonly scrollRowPadding: number;
-	readonly showDetailsView: 'open' | 'selection' | false;
-	readonly showGhostRefsOnRowHover: boolean;
+	readonly onlyFollowFirstParent: boolean;
+	readonly pageItemLimit: number;
+	readonly pullRequests: {
+		readonly enabled: boolean;
+	};
 	readonly scrollMarkers: {
 		readonly enabled: boolean;
 		readonly additionalTypes: GraphScrollMarkersAdditionalTypes[];
 	};
-	readonly pullRequests: {
-		readonly enabled: boolean;
-	};
+	readonly scrollRowPadding: number;
+	readonly searchItemLimit: number;
+	readonly showDetailsView: 'open' | 'selection' | false;
+	readonly showGhostRefsOnRowHover: boolean;
 	readonly showRemoteNames: boolean;
 	readonly showUpstreamStatus: boolean;
-	readonly pageItemLimit: number;
-	readonly searchItemLimit: number;
 	readonly statusBar: {
 		readonly enabled: boolean;
 	};
@@ -592,6 +596,7 @@ export interface ViewsCommonConfig {
 		readonly stashes: {
 			readonly label: string;
 			readonly description: string;
+			readonly tooltip: string;
 		};
 	};
 	readonly openChangesInMultiDiffEditor: boolean;

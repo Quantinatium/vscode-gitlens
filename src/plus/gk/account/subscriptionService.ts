@@ -191,10 +191,6 @@ export class SubscriptionService implements Disposable {
 			registerCommand(Commands.PlusRestore, (src?: Source) => this.setProFeaturesVisibility(true, src)),
 
 			registerCommand(Commands.PlusValidate, (src?: Source) => this.validate({ force: true }, src)),
-
-			...(this.container.debugging
-				? [registerCommand('gitlens.plus.reset', () => this.logout(true, undefined))]
-				: []),
 		];
 	}
 
@@ -684,7 +680,7 @@ export class SubscriptionService implements Disposable {
 		} else {
 			const activeOrgId = this._subscription.activeOrganization?.id;
 			void env.openExternal(
-				this.connection.getGkDevUri(
+				this.container.getGkDevUri(
 					'purchase',
 					activeOrgId ? `source=gitlens&org=${activeOrgId}` : 'source=gitlens',
 				),

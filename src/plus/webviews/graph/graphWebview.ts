@@ -6,10 +6,10 @@ import { parseCommandContext } from '../../../commands/base';
 import type { CopyDeepLinkCommandArgs } from '../../../commands/copyDeepLink';
 import type { CopyMessageToClipboardCommandArgs } from '../../../commands/copyMessageToClipboard';
 import type { CopyShaToClipboardCommandArgs } from '../../../commands/copyShaToClipboard';
+import type { InspectCommandArgs } from '../../../commands/inspect';
 import type { OpenOnRemoteCommandArgs } from '../../../commands/openOnRemote';
 import type { OpenPullRequestOnRemoteCommandArgs } from '../../../commands/openPullRequestOnRemote';
 import type { CreatePatchCommandArgs } from '../../../commands/patches';
-import type { ShowCommitsInViewCommandArgs } from '../../../commands/showCommitsInView';
 import type { Config, GraphMinimapMarkersAdditionalTypes, GraphScrollMarkersAdditionalTypes } from '../../../config';
 import type { StoredGraphFilters, StoredGraphIncludeOnlyRef, StoredGraphRefType } from '../../../constants';
 import { Commands, GlyphChars } from '../../../constants';
@@ -131,7 +131,6 @@ import type {
 	SearchParams,
 	State,
 	UpdateColumnsParams,
-	UpdateDimMergeCommitsParams,
 	UpdateExcludeTypeParams,
 	UpdateGraphConfigurationParams,
 	UpdateRefsVisibilityParams,
@@ -163,7 +162,6 @@ import {
 	SearchRequest,
 	supportedRefMetadataTypes,
 	UpdateColumnsCommand,
-	UpdateDimMergeCommitsCommand,
 	UpdateExcludeTypeCommand,
 	UpdateGraphConfigurationCommand,
 	UpdateIncludeOnlyRefsCommand,
@@ -616,9 +614,6 @@ export class GraphWebviewProvider implements WebviewProvider<State, State, Graph
 			case ChooseRepositoryCommand.is(e):
 				void this.onChooseRepository();
 				break;
-			case UpdateDimMergeCommitsCommand.is(e):
-				this.dimMergeCommits(e.params);
-				break;
 			case DoubleClickedCommandType.is(e):
 				void this.onDoubleClick(e.params);
 				break;
@@ -694,6 +689,12 @@ export class GraphWebviewProvider implements WebviewProvider<State, State, Graph
 						void configuration.updateEffective('graph.minimap.additionalTypes', additionalTypes);
 						break;
 					}
+					case 'dimMergeCommits':
+						void configuration.updateEffective('graph.dimMergeCommits', params.changes[key]);
+						break;
+					case 'onlyFollowFirstParent':
+						void configuration.updateEffective('graph.onlyFollowFirstParent', params.changes[key]);
+						break;
 					default:
 						// TODO:@eamodio add more config options as needed
 						debugger;
@@ -748,30 +749,17 @@ export class GraphWebviewProvider implements WebviewProvider<State, State, Graph
 			configuration.changed(e, 'defaultDateFormat') ||
 			configuration.changed(e, 'defaultDateStyle') ||
 			configuration.changed(e, 'advanced.abbreviatedShaLength') ||
-			configuration.changed(e, 'graph.avatars') ||
-			configuration.changed(e, 'graph.dateFormat') ||
-			configuration.changed(e, 'graph.dateStyle') ||
-			configuration.changed(e, 'graph.dimMergeCommits') ||
-			configuration.changed(e, 'graph.highlightRowsOnRefHover') ||
-			configuration.changed(e, 'graph.scrollRowPadding') ||
-			configuration.changed(e, 'graph.scrollMarkers.enabled') ||
-			configuration.changed(e, 'graph.scrollMarkers.additionalTypes') ||
-			configuration.changed(e, 'graph.showGhostRefsOnRowHover') ||
-			configuration.changed(e, 'graph.pullRequests.enabled') ||
-			configuration.changed(e, 'graph.showRemoteNames') ||
-			configuration.changed(e, 'graph.showUpstreamStatus') ||
-			configuration.changed(e, 'graph.minimap.enabled') ||
-			configuration.changed(e, 'graph.minimap.dataType') ||
-			configuration.changed(e, 'graph.minimap.additionalTypes')
+			configuration.changed(e, 'graph')
 		) {
 			void this.notifyDidChangeConfiguration();
 
 			if (
-				(configuration.changed(e, 'graph.minimap.enabled') ||
+				configuration.changed(e, 'graph.onlyFollowFirstParent') ||
+				((configuration.changed(e, 'graph.minimap.enabled') ||
 					configuration.changed(e, 'graph.minimap.dataType')) &&
-				configuration.get('graph.minimap.enabled') &&
-				configuration.get('graph.minimap.dataType') === 'lines' &&
-				!this._graph?.includes?.stats
+					configuration.get('graph.minimap.enabled') &&
+					configuration.get('graph.minimap.dataType') === 'lines' &&
+					!this._graph?.includes?.stats)
 			) {
 				this.updateState();
 			}
@@ -831,10 +819,6 @@ export class GraphWebviewProvider implements WebviewProvider<State, State, Graph
 
 		this._theme = theme;
 		this.updateState();
-	}
-
-	private dimMergeCommits(e: UpdateDimMergeCommitsParams) {
-		void configuration.updateEffective('graph.dimMergeCommits', e.dim);
 	}
 
 	private onColumnsChanged(e: UpdateColumnsParams) {
@@ -961,7 +945,13 @@ export class GraphWebviewProvider implements WebviewProvider<State, State, Graph
 	}
 
 	private async onGetMissingRefMetadata(e: GetMissingRefsMetadataParams) {
-		if (this._graph == null || this._refsMetadata === null || !getContext('gitlens:hasConnectedRemotes')) return;
+		if (
+			this._graph == null ||
+			this._refsMetadata === null ||
+			!getContext('gitlens:repos:withHostingIntegrationsConnected')?.includes(this._graph.repoPath)
+		) {
+			return;
+		}
 
 		const repoPath = this._graph.repoPath;
 
@@ -1565,7 +1555,7 @@ export class GraphWebviewProvider implements WebviewProvider<State, State, Graph
 			repo.watchFileSystem(1000),
 			repo.onDidChangeFileSystem(this.onRepositoryFileSystemChanged, this),
 			onDidChangeContext(key => {
-				if (key !== 'gitlens:hasConnectedRemotes') return;
+				if (key !== 'gitlens:repos:withHostingIntegrationsConnected') return;
 
 				this.resetRefsMetadata();
 				this.updateRefsMetadata();
@@ -1846,6 +1836,7 @@ export class GraphWebviewProvider implements WebviewProvider<State, State, Graph
 			minimap: configuration.get('graph.minimap.enabled'),
 			minimapDataType: configuration.get('graph.minimap.dataType'),
 			minimapMarkerTypes: this.getMinimapMarkerTypes(),
+			onlyFollowFirstParent: configuration.get('graph.onlyFollowFirstParent'),
 			scrollRowPadding: configuration.get('graph.scrollRowPadding'),
 			scrollMarkerTypes: this.getScrollMarkerTypes(),
 			showGhostRefsOnRowHover: configuration.get('graph.showGhostRefsOnRowHover'),
@@ -2157,7 +2148,7 @@ export class GraphWebviewProvider implements WebviewProvider<State, State, Graph
 	}
 
 	private resetRefsMetadata(): null | undefined {
-		this._refsMetadata = getContext('gitlens:hasConnectedRemotes') ? undefined : null;
+		this._refsMetadata = getContext('gitlens:repos:withHostingIntegrationsConnected') ? undefined : null;
 		return this._refsMetadata;
 	}
 
@@ -2409,10 +2400,7 @@ export class GraphWebviewProvider implements WebviewProvider<State, State, Graph
 			return void showGraphDetailsView(ref, { preserveFocus: true, preserveVisibility: false });
 		}
 
-		return executeCommand<ShowCommitsInViewCommandArgs>(Commands.ShowInDetailsView, {
-			repoPath: ref.repoPath,
-			refs: [ref.ref],
-		});
+		return executeCommand<InspectCommandArgs>(Commands.ShowInDetailsView, { ref: ref });
 	}
 
 	@log()
