@@ -63,7 +63,7 @@ export class HomeApp extends App<State> {
 				this.state.subscription = msg.params.subscription;
 				this.setState(this.state);
 				this.updatePromos();
-				this.updateSubscription();
+				this.updateSourceAndSubscription();
 
 				break;
 
@@ -150,13 +150,16 @@ export class HomeApp extends App<State> {
 			orgSettings: { drafts },
 		} = this.state;
 
-		setElementVisibility('org-settings-drafts', drafts);
+		for (const el of document.querySelectorAll<HTMLElement>('[data-org-requires="drafts"]')) {
+			setElementVisibility(el, drafts);
+		}
 	}
 
-	private updateSubscription() {
+	private updateSourceAndSubscription() {
 		const { subscription } = this.state;
 		const els = document.querySelectorAll<GlFeatureBadge>('gl-feature-badge');
 		for (const el of els) {
+			el.source = { source: 'home', detail: 'badge' };
 			el.subscription = subscription;
 		}
 	}
@@ -168,7 +171,7 @@ export class HomeApp extends App<State> {
 	private updateState() {
 		this.updateNoRepo();
 		this.updatePromos();
-		this.updateSubscription();
+		this.updateSourceAndSubscription();
 		this.updateOrgSettings();
 		this.updateCollapsedSections();
 	}

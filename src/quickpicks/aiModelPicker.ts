@@ -1,65 +1,83 @@
-import type { QuickPickItem } from 'vscode';
-import { QuickPickItemKind, window } from 'vscode';
+import type { Disposable, QuickInputButton, QuickPickItem } from 'vscode';
+import { QuickPickItemKind, ThemeIcon, window } from 'vscode';
+import type { AIModel } from '../ai/aiProviderService';
 import type { AIModels, AIProviders } from '../constants';
+import { Commands } from '../constants';
 import type { Container } from '../container';
-import { configuration } from '../system/configuration';
+import { executeCommand } from '../system/command';
+import { getQuickPickIgnoreFocusOut } from '../system/utils';
 
-export interface ModelQuickPickItem<
-	Provider extends AIProviders = AIProviders,
-	Model extends AIModels<Provider> = AIModels<Provider>,
-> extends QuickPickItem {
-	provider: Provider;
-	model: Model;
+export interface ModelQuickPickItem extends QuickPickItem {
+	model: AIModel;
 }
 
-export async function showAIModelPicker(container: Container): Promise<ModelQuickPickItem | undefined>;
-export async function showAIModelPicker<T extends AIProviders>(
-	container: Container,
-	provider: T,
-): Promise<ModelQuickPickItem<T> | undefined>;
 export async function showAIModelPicker(
 	container: Container,
-	provider?: AIProviders,
+	current?: { provider: AIProviders; model: AIModels },
 ): Promise<ModelQuickPickItem | undefined> {
 	const models = (await (await container.ai)?.getModels()) ?? [];
 
-	let filterByProvider;
-	if (provider != null) {
-		filterByProvider = provider;
-	} else {
-		provider = configuration.get('ai.experimental.provider') ?? 'openai';
-	}
-
-	const model = configuration.get(`ai.experimental.${provider}.model`);
-
-	type QuickPickSeparator = { label: string; kind: QuickPickItemKind.Separator };
-	const items: (ModelQuickPickItem | QuickPickSeparator)[] = [];
+	const items: ModelQuickPickItem[] = [];
 
 	let lastProvider: AIProviders | undefined;
 	for (const m of models) {
-		if (m.hidden || (filterByProvider != null && m.provider.id === filterByProvider)) continue;
+		if (m.hidden) continue;
 
 		if (lastProvider !== m.provider.id) {
 			lastProvider = m.provider.id;
-			items.push({ label: m.provider.name, kind: QuickPickItemKind.Separator });
+			items.push({ label: m.provider.name, kind: QuickPickItemKind.Separator } as unknown as ModelQuickPickItem);
 		}
 
-		const current = m.provider.id === provider && (m.id === model || (model == null && m.default));
+		const picked = m.provider.id === current?.provider && m.id === current?.model;
 
 		items.push({
-			label: m.provider.name,
-			description: current ? `${m.name}  \u2713` : m.name,
-			provider: m.provider.id,
-			model: m.id,
-			picked: current,
-		});
+			label: m.name,
+			iconPath: picked ? new ThemeIcon('check') : new ThemeIcon('blank'),
+			// description: m.provider.name,
+			model: m,
+			picked: picked,
+		} satisfies ModelQuickPickItem);
 	}
 
-	const pick = (await window.showQuickPick(items, {
-		title: 'Switch AI Model',
-		placeHolder: 'select an AI model to use for experimental AI features',
-		matchOnDescription: true,
-	})) as ModelQuickPickItem | undefined;
+	const quickpick = window.createQuickPick<ModelQuickPickItem>();
+	quickpick.ignoreFocusOut = getQuickPickIgnoreFocusOut();
 
-	return pick;
+	const disposables: Disposable[] = [];
+
+	const ResetAIKeyButton: QuickInputButton = {
+		iconPath: new ThemeIcon('clear-all'),
+		tooltip: 'Reset AI Keys...',
+	};
+
+	try {
+		const pick = await new Promise<ModelQuickPickItem | undefined>(resolve => {
+			disposables.push(
+				quickpick.onDidHide(() => resolve(undefined)),
+				quickpick.onDidAccept(() => {
+					if (quickpick.activeItems.length !== 0) {
+						resolve(quickpick.activeItems[0]);
+					}
+				}),
+				quickpick.onDidTriggerButton(e => {
+					if (e === ResetAIKeyButton) {
+						void executeCommand(Commands.ResetAIKey);
+					}
+				}),
+			);
+
+			quickpick.title = 'Choose AI Model';
+			quickpick.placeholder = 'Select an AI model to use for experimental AI features';
+			quickpick.matchOnDescription = true;
+			quickpick.matchOnDetail = true;
+			quickpick.buttons = [ResetAIKeyButton];
+			quickpick.items = items;
+
+			quickpick.show();
+		});
+
+		return pick;
+	} finally {
+		quickpick.dispose();
+		disposables.forEach(d => void d.dispose());
+	}
 }

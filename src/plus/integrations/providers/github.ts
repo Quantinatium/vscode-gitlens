@@ -9,7 +9,10 @@ import { PullRequest } from '../../../git/models/pullRequest';
 import type { RepositoryMetadata } from '../../../git/models/repositoryMetadata';
 import { log } from '../../../system/decorators/log';
 import { ensurePaidPlan } from '../../utils';
-import type { IntegrationAuthenticationProviderDescriptor } from '../authentication/integrationAuthentication';
+import type {
+	IntegrationAuthenticationProviderDescriptor,
+	IntegrationAuthenticationService,
+} from '../authentication/integrationAuthentication';
 import type { SupportedIntegrationIds } from '../integration';
 import { HostingIntegration } from '../integration';
 import { HostingIntegrationId, providersMetadata, SelfHostedIntegrationId } from './models';
@@ -87,6 +90,23 @@ abstract class GitHubIntegrationBase<ID extends SupportedIntegrationIds> extends
 			repo.owner,
 			repo.name,
 			Number(id),
+			{
+				baseUrl: this.apiBaseUrl,
+			},
+		);
+	}
+
+	protected override async getProviderPullRequest(
+		{ accessToken }: AuthenticationSession,
+		repo: GitHubRepositoryDescriptor,
+		id: string,
+	): Promise<PullRequest | undefined> {
+		return (await this.container.github)?.getPullRequest(
+			this,
+			accessToken,
+			repo.owner,
+			repo.name,
+			parseInt(id, 10),
 			{
 				baseUrl: this.apiBaseUrl,
 			},
@@ -179,6 +199,24 @@ abstract class GitHubIntegrationBase<ID extends SupportedIntegrationIds> extends
 		);
 	}
 
+	protected override async searchProviderPullRequests(
+		{ accessToken }: AuthenticationSession,
+		searchQuery: string,
+		repos?: GitHubRepositoryDescriptor[],
+		cancellation?: CancellationToken,
+	): Promise<PullRequest[] | undefined> {
+		return (await this.container.github)?.searchPullRequests(
+			this,
+			accessToken,
+			{
+				search: searchQuery,
+				repos: repos?.map(r => `${r.owner}/${r.name}`),
+				baseUrl: this.apiBaseUrl,
+			},
+			cancellation,
+		);
+	}
+
 	protected override async mergeProviderPullRequest(
 		{ accessToken }: AuthenticationSession,
 		pr: PullRequest | { id: string; headRefSha: string },
@@ -247,15 +285,21 @@ export class GitHubEnterpriseIntegration extends GitHubIntegrationBase<SelfHoste
 
 	constructor(
 		container: Container,
+		authenticationService: IntegrationAuthenticationService,
 		getProvidersApi: () => Promise<ProvidersApi>,
 		private readonly _domain: string,
 	) {
-		super(container, getProvidersApi);
+		super(container, authenticationService, getProvidersApi);
 	}
 
 	@log()
 	override async connect(): Promise<boolean> {
-		if (!(await ensurePaidPlan(this.container, `Rich integration with ${this.name} is a Pro feature.`))) {
+		if (
+			!(await ensurePaidPlan(this.container, `Rich integration with ${this.name} is a Pro feature.`, {
+				source: 'integrations',
+				detail: { action: 'connect', integration: this.id },
+			}))
+		) {
 			return false;
 		}
 

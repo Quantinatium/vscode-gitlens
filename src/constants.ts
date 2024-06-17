@@ -1,11 +1,15 @@
 import type { AnthropicModels } from './ai/anthropicProvider';
 import type { GeminiModels } from './ai/geminiProvider';
 import type { OpenAIModels } from './ai/openaiProvider';
-import type { ViewShowBranchComparison } from './config';
+import type { VSCodeAIModels } from './ai/vscodeProvider';
+import type { AnnotationStatus } from './annotations/annotationProvider';
+import type { FileAnnotationType, ViewShowBranchComparison } from './config';
 import type { Environment } from './container';
 import type { StoredSearchQuery } from './git/search';
-import type { Subscription } from './plus/gk/account/subscription';
+import type { Subscription, SubscriptionPlanId, SubscriptionState } from './plus/gk/account/subscription';
 import type { Integration } from './plus/integrations/integration';
+import type { IntegrationId, IssueIntegrationId } from './plus/integrations/providers/models';
+import type { TelemetryEventData } from './telemetry/telemetry';
 import type { TrackedUsage, TrackedUsageKeys } from './telemetry/usageTracker';
 
 export const extensionPrefix = 'gitlens';
@@ -15,7 +19,7 @@ export const previewBadge = 'ᴘʀᴇᴠɪᴇᴡ';
 export const proBadge = 'ᴘʀᴏ';
 export const proBadgeSuperscript = 'ᴾᴿᴼ';
 
-export const ImageMimetypes: Record<string, string> = {
+export const ImageMimetypes: Record<string, string> = Object.freeze({
 	'.png': 'image/png',
 	'.gif': 'image/gif',
 	'.jpg': 'image/jpeg',
@@ -25,7 +29,27 @@ export const ImageMimetypes: Record<string, string> = {
 	'.tif': 'image/tiff',
 	'.tiff': 'image/tiff',
 	'.bmp': 'image/bmp',
-};
+});
+
+export const urls = Object.freeze({
+	codeSuggest: 'https://gitkraken.com/solutions/code-suggest?utm_source=gitlens-extension&utm_medium=in-app-links',
+	cloudPatches: 'https://gitkraken.com/solutions/cloud-patches?utm_source=gitlens-extension&utm_medium=in-app-links',
+	graph: 'https://gitkraken.com/solutions/commit-graph?utm_source=gitlens-extension&utm_medium=in-app-links',
+	launchpad: 'https://gitkraken.com/solutions/launchpad?utm_source=gitlens-extension&utm_medium=in-app-links',
+	platform: 'https://gitkraken.com/devex?utm_source=gitlens-extension&utm_medium=in-app-links',
+	pricing: 'https://gitkraken.com/gitlens/pricing?utm_source=gitlens-extension&utm_medium=in-app-links',
+	proFeatures: 'https://gitkraken.com/gitlens/pro-features?utm_source=gitlens-extension&utm_medium=in-app-links',
+	security: 'https://help.gitkraken.com/gitlens/security?utm_source=gitlens-extension&utm_medium=in-app-links',
+	workspaces: 'https://gitkraken.com/solutions/workspaces?utm_source=gitlens-extension&utm_medium=in-app-links',
+
+	cli: 'https://gitkraken.com/cli?utm_source=gitlens-extension&utm_medium=in-app-links',
+	browserExtension: 'https://gitkraken.com/browser-extension?utm_source=gitlens-extension&utm_medium=in-app-links',
+	desktop: 'https://gitkraken.com/git-client?utm_source=gitlens-extension&utm_medium=in-app-links',
+
+	releaseNotes: 'https://help.gitkraken.com/gitlens/gitlens-release-notes-current/',
+	releaseAnnouncement:
+		'https://www.gitkraken.com/blog/gitkraken-launches-devex-platform-acquires-codesee?utm_source=gitlens-extension&utm_medium=in-app-links',
+});
 
 export const enum CharCode {
 	/**
@@ -132,7 +156,6 @@ export const enum Commands {
 	CompareWorkingWith = 'gitlens.compareWorkingWith',
 	ComputingFileAnnotations = 'gitlens.computingFileAnnotations',
 	ConnectRemoteProvider = 'gitlens.connectRemoteProvider',
-	CopyAutolinkUrl = 'gitlens.copyAutolinkUrl',
 	CopyCurrentBranch = 'gitlens.copyCurrentBranch',
 	CopyDeepLinkToBranch = 'gitlens.copyDeepLinkToBranch',
 	CopyDeepLinkToCommit = 'gitlens.copyDeepLinkToCommit',
@@ -151,7 +174,6 @@ export const enum Commands {
 	CopyRemoteFileUrl = 'gitlens.copyRemoteFileUrlToClipboard',
 	CopyRemoteFileUrlWithoutRange = 'gitlens.copyRemoteFileUrlWithoutRange',
 	CopyRemoteFileUrlFrom = 'gitlens.copyRemoteFileUrlFrom',
-	CopyRemoteIssueUrl = 'gitlens.copyRemoteIssueUrl',
 	CopyRemotePullRequestUrl = 'gitlens.copyRemotePullRequestUrl',
 	CopyRemoteRepositoryUrl = 'gitlens.copyRemoteRepositoryUrl',
 	CopyShaToClipboard = 'gitlens.copyShaToClipboard',
@@ -192,7 +214,6 @@ export const enum Commands {
 	GetStarted = 'gitlens.getStarted',
 	GKSwitchOrganization = 'gitlens.gk.switchOrganization',
 	InviteToLiveShare = 'gitlens.inviteToLiveShare',
-	OpenAutolinkUrl = 'gitlens.openAutolinkUrl',
 	OpenBlamePriorToChange = 'gitlens.openBlamePriorToChange',
 	OpenBranchesOnRemote = 'gitlens.openBranchesOnRemote',
 	OpenBranchOnRemote = 'gitlens.openBranchOnRemote',
@@ -208,7 +229,6 @@ export const enum Commands {
 	OpenFileAtRevisionFrom = 'gitlens.openFileRevisionFrom',
 	OpenFolderHistory = 'gitlens.openFolderHistory',
 	OpenOnRemote = 'gitlens.openOnRemote',
-	OpenIssueOnRemote = 'gitlens.openIssueOnRemote',
 	OpenCloudPatch = 'gitlens.openCloudPatch',
 	OpenPatch = 'gitlens.openPatch',
 	OpenPullRequestOnRemote = 'gitlens.openPullRequestOnRemote',
@@ -217,6 +237,7 @@ export const enum Commands {
 	OpenRevisionFile = 'gitlens.openRevisionFile',
 	OpenRevisionFileInDiffLeft = 'gitlens.openRevisionFileInDiffLeft',
 	OpenRevisionFileInDiffRight = 'gitlens.openRevisionFileInDiffRight',
+	OpenWalkthrough = 'gitlens.openWalkthrough',
 	OpenWorkingFile = 'gitlens.openWorkingFile',
 	OpenWorkingFileInDiffLeft = 'gitlens.openWorkingFileInDiffLeft',
 	OpenWorkingFileInDiffRight = 'gitlens.openWorkingFileInDiffRight',
@@ -261,22 +282,20 @@ export const enum Commands {
 	PlusLogout = 'gitlens.plus.logout',
 	PlusManage = 'gitlens.plus.manage',
 	PlusManageCloudIntegrations = 'gitlens.plus.cloudIntegrations.manage',
-	PlusPurchase = 'gitlens.plus.purchase',
 	PlusReactivateProTrial = 'gitlens.plus.reactivateProTrial',
 	PlusResendVerification = 'gitlens.plus.resendVerification',
 	PlusRestore = 'gitlens.plus.restore',
 	PlusShowPlans = 'gitlens.plus.showPlans',
 	PlusSignUp = 'gitlens.plus.signUp',
 	PlusStartPreviewTrial = 'gitlens.plus.startPreviewTrial',
+	PlusUpgrade = 'gitlens.plus.upgrade',
 	PlusValidate = 'gitlens.plus.validate',
 	QuickOpenFileHistory = 'gitlens.quickOpenFileHistory',
 	RefreshLaunchpad = 'gitlens.launchpad.refresh',
 	RefreshGraph = 'gitlens.graph.refresh',
 	RefreshHover = 'gitlens.refreshHover',
-	ResetAvatarCache = 'gitlens.resetAvatarCache',
+	Reset = 'gitlens.reset',
 	ResetAIKey = 'gitlens.resetAIKey',
-	ResetSuppressedWarnings = 'gitlens.resetSuppressedWarnings',
-	ResetTrackedUsage = 'gitlens.resetTrackedUsage',
 	ResetViewsLayout = 'gitlens.resetViewsLayout',
 	RevealCommitInView = 'gitlens.revealCommitInView',
 	ShareAsCloudPatch = 'gitlens.shareAsCloudPatch',
@@ -363,8 +382,11 @@ export const enum Commands {
 	ToggleReviewMode = 'gitlens.toggleReviewMode',
 	ToggleZenMode = 'gitlens.toggleZenMode',
 	ViewsCopy = 'gitlens.views.copy',
+	ViewsCopyAsMarkdown = 'gitlens.views.copyAsMarkdown',
+	ViewsCopyUrl = 'gitlens.views.copyUrl',
 	ViewsOpenDirectoryDiff = 'gitlens.views.openDirectoryDiff',
 	ViewsOpenDirectoryDiffWithWorking = 'gitlens.views.openDirectoryDiffWithWorking',
+	ViewsOpenUrl = 'gitlens.views.openUrl',
 
 	Deprecated_DiffHeadWith = 'gitlens.diffHeadWith',
 	Deprecated_DiffWorkingWith = 'gitlens.diffWorkingWith',
@@ -645,46 +667,46 @@ export type TreeViewNodeTypes =
 	| 'worktree'
 	| 'worktrees';
 
-export type ContextKeys =
-	| `${typeof extensionPrefix}:action:${string}`
-	| `${typeof extensionPrefix}:key:${Keys}`
-	| `${typeof extensionPrefix}:webview:${WebviewTypes | CustomEditorTypes}:visible`
-	| `${typeof extensionPrefix}:webviewView:${WebviewViewTypes}:visible`
-	| `${typeof extensionPrefix}:activeFileStatus`
-	| `${typeof extensionPrefix}:annotationStatus`
-	| `${typeof extensionPrefix}:debugging`
-	| `${typeof extensionPrefix}:disabledToggleCodeLens`
-	| `${typeof extensionPrefix}:disabled`
-	| `${typeof extensionPrefix}:enabled`
-	| `${typeof extensionPrefix}:gk:hasOrganizations`
-	| `${typeof extensionPrefix}:gk:organization:ai:enabled`
-	| `${typeof extensionPrefix}:gk:organization:drafts:byob`
-	| `${typeof extensionPrefix}:gk:organization:drafts:enabled`
-	| `${typeof extensionPrefix}:hasConnectedRemotes`
-	| `${typeof extensionPrefix}:hasRemotes`
-	| `${typeof extensionPrefix}:hasRichRemotes`
-	| `${typeof extensionPrefix}:hasVirtualFolders`
-	| `${typeof extensionPrefix}:prerelease`
-	| `${typeof extensionPrefix}:readonly`
-	| `${typeof extensionPrefix}:untrusted`
-	| `${typeof extensionPrefix}:views:canCompare`
-	| `${typeof extensionPrefix}:views:canCompare:file`
-	| `${typeof extensionPrefix}:views:commits:filtered`
-	| `${typeof extensionPrefix}:views:commits:hideMergeCommits`
-	| `${typeof extensionPrefix}:views:contributors:hideMergeCommits`
-	| `${typeof extensionPrefix}:views:fileHistory:canPin`
-	| `${typeof extensionPrefix}:views:fileHistory:cursorFollowing`
-	| `${typeof extensionPrefix}:views:fileHistory:editorFollowing`
-	| `${typeof extensionPrefix}:views:lineHistory:editorFollowing`
-	| `${typeof extensionPrefix}:views:patchDetails:mode`
-	| `${typeof extensionPrefix}:views:pullRequest:visible`
-	| `${typeof extensionPrefix}:views:repositories:autoRefresh`
-	| `${typeof extensionPrefix}:vsls`
-	| `${typeof extensionPrefix}:plus`
-	| `${typeof extensionPrefix}:plus:disallowedRepos`
-	| `${typeof extensionPrefix}:plus:enabled`
-	| `${typeof extensionPrefix}:plus:required`
-	| `${typeof extensionPrefix}:plus:state`;
+export type ContextKeys = {
+	'gitlens:activeFileStatus': string;
+	'gitlens:annotationStatus': AnnotationStatus | `${AnnotationStatus}+${FileAnnotationType}`;
+	'gitlens:debugging': boolean;
+	'gitlens:disabled': boolean;
+	'gitlens:disabledToggleCodeLens': boolean;
+	'gitlens:enabled': boolean;
+	'gitlens:gk:hasOrganizations': boolean;
+	'gitlens:gk:organization:ai:enabled': boolean;
+	'gitlens:gk:organization:drafts:byob': boolean;
+	'gitlens:gk:organization:drafts:enabled': boolean;
+	'gitlens:hasVirtualFolders': boolean;
+	'gitlens:plus': SubscriptionPlanId;
+	'gitlens:plus:disallowedRepos': string[];
+	'gitlens:plus:enabled': boolean;
+	'gitlens:plus:required': boolean;
+	'gitlens:plus:state': SubscriptionState;
+	'gitlens:prerelease': boolean;
+	'gitlens:readonly': boolean;
+	'gitlens:repos:withRemotes': string[];
+	'gitlens:repos:withHostingIntegrations': string[];
+	'gitlens:repos:withHostingIntegrationsConnected': string[];
+	'gitlens:untrusted': boolean;
+	'gitlens:views:canCompare': boolean;
+	'gitlens:views:canCompare:file': boolean;
+	'gitlens:views:commits:filtered': boolean;
+	'gitlens:views:commits:hideMergeCommits': boolean;
+	'gitlens:views:contributors:hideMergeCommits': boolean;
+	'gitlens:views:fileHistory:canPin': boolean;
+	'gitlens:views:fileHistory:cursorFollowing': boolean;
+	'gitlens:views:fileHistory:editorFollowing': boolean;
+	'gitlens:views:lineHistory:editorFollowing': boolean;
+	'gitlens:views:patchDetails:mode': 'create' | 'view';
+	'gitlens:views:pullRequest:visible': boolean;
+	'gitlens:views:repositories:autoRefresh': boolean;
+	'gitlens:vsls': boolean | 'host' | 'guest';
+} & Record<`gitlens:action:${string}`, number> &
+	Record<`gitlens:key:${Keys}`, boolean> &
+	Record<`gitlens:webview:${WebviewTypes | CustomEditorTypes}:visible`, boolean> &
+	Record<`gitlens:webviewView:${WebviewViewTypes}:visible`, boolean>;
 
 export type CoreCommands =
 	| 'cursorMove'
@@ -807,53 +829,54 @@ export const enum Schemes {
 	Virtual = 'vscode-vfs',
 }
 
-export type TelemetryEvents =
-	| 'account/validation/failed'
-	| 'activate'
-	| 'cloudIntegrations/hosting/connected'
-	| 'cloudIntegrations/hosting/disconnected'
-	| 'cloudIntegrations/issue/connected'
-	| 'cloudIntegrations/issue/disconnected'
-	| 'cloudIntegrations/settingsOpened'
-	| 'codeSuggestionArchived'
-	| 'codeSuggestionCreated'
-	| 'codeSuggestionViewed'
-	| 'command'
-	| 'command/core'
-	| 'launchpad/action'
-	| 'launchpad/configurationChanged'
-	| 'launchpad/groupToggled'
-	| 'launchpad/open'
-	| 'launchpad/opened'
-	| 'launchpad/steps/connect'
-	| 'launchpad/steps/main'
-	| 'launchpad/steps/details'
-	| 'launchpad/indicator/hidden'
-	| 'launchpad/indicator/firstLoad'
-	| 'openReviewMode'
-	| 'providers/context'
-	| 'providers/registrationComplete'
-	| 'remoteProviders/connected'
-	| 'remoteProviders/disconnected'
-	| 'repositories/changed'
-	| 'repositories/visibility'
-	| 'repository/opened'
-	| 'repository/visibility'
+export type Sources =
+	| 'account'
+	| 'code-suggest'
+	| 'cloud-patches'
+	| 'commandPalette'
+	| 'deeplink'
+	| 'git-commands'
+	| 'graph'
+	| 'home'
+	| 'inspect'
+	| 'inspect-overview'
+	| 'integrations'
+	| 'launchpad'
+	| 'launchpad-indicator'
+	| 'notification'
+	| 'patchDetails'
+	| 'prompt'
+	| 'settings'
+	| 'timeline'
+	| 'trial-indicator'
 	| 'subscription'
-	| 'subscription/changed'
-	| 'usage/track';
+	| 'walkthrough'
+	| 'welcome';
 
-export type AIProviders = 'anthropic' | 'gemini' | 'openai';
+export interface Source {
+	source: Sources;
+	detail?: string | TelemetryEventData;
+}
+
+export type AIProviders = 'anthropic' | 'gemini' | 'openai' | 'vscode';
 export type AIModels<Provider extends AIProviders = AIProviders> = Provider extends 'openai'
 	? OpenAIModels
 	: Provider extends 'anthropic'
 	  ? AnthropicModels
 	  : Provider extends 'gemini'
 	    ? GeminiModels
-	    : AnthropicModels | GeminiModels | OpenAIModels;
+	    : Provider extends 'vscode'
+	      ? VSCodeAIModels
+	      : AnthropicModels | GeminiModels | OpenAIModels;
+
+export type SupportedAIModels =
+	| `anthropic:${AIModels<'anthropic'>}`
+	| `google:${AIModels<'gemini'>}`
+	| `openai:${AIModels<'openai'>}`
+	| 'vscode';
 
 export type SecretKeys =
-	| `gitlens.integration.auth:${string}`
+	| `gitlens.integration.auth:${IntegrationId}|${string}`
 	| `gitlens.${AIProviders}.key`
 	| `gitlens.plus.auth:${Environment}`;
 
@@ -909,6 +932,7 @@ export type GlobalStorage = {
 	'views:welcome:visible': boolean;
 	'confirm:draft:storage': boolean;
 	'home:sections:collapsed': string[];
+	'launchpad:groups:collapsed': StoredFocusGroup[];
 	'launchpad:indicator:hasLoaded': boolean;
 	'launchpad:indicator:hasInteracted': string;
 } & { [key in `confirm:ai:tos:${AIProviders}`]: boolean } & {
@@ -1126,3 +1150,372 @@ export type WalkthroughSteps =
 	| 'code-collab'
 	| 'integrations'
 	| 'more';
+
+export type StoredFocusGroup =
+	| 'current-branch'
+	| 'pinned'
+	| 'mergeable'
+	| 'blocked'
+	| 'follow-up'
+	| 'needs-review'
+	| 'waiting-for-review'
+	| 'draft'
+	| 'other'
+	| 'snoozed';
+
+export type TelemetryGlobalContext = {
+	debugging: boolean;
+	enabled: boolean;
+	prerelease: boolean;
+	install: boolean;
+	upgrade: boolean;
+	upgradedFrom: string | undefined;
+	'folders.count': number;
+	'folders.schemes': string;
+	'providers.count': number;
+	'providers.ids': string;
+	'repositories.count': number;
+	'repositories.hasRemotes': boolean;
+	'repositories.hasRichRemotes': boolean;
+	'repositories.hasConnectedRemotes': boolean;
+	'repositories.withRemotes': number;
+	'repositories.withHostingIntegrations': number;
+	'repositories.withHostingIntegrationsConnected': number;
+	'repositories.remoteProviders': string;
+	'repositories.schemes': string;
+	'repositories.visibility': 'private' | 'public' | 'local' | 'mixed';
+	'workspace.isTrusted': boolean;
+} & SubscriptionEventData;
+
+export type TelemetryEvents = {
+	/** Sent when account validation fails */
+	'account/validation/failed': {
+		'account.id': string;
+		exception: string;
+		code: string | undefined;
+		statusCode: string | undefined;
+	};
+
+	/** Sent when GitLens is activated */
+	activate: {
+		'activation.elapsed': number;
+		'activation.mode': string | undefined;
+	} & Record<`config.${string}`, string | number | boolean | null>;
+
+	/** Sent when a cloud-based hosting provider is connected */
+	'cloudIntegrations/hosting/connected': {
+		'hostingProvider.provider': IntegrationId;
+		'hostingProvider.key': string;
+	};
+	/** Sent when a cloud-based hosting provider is disconnected */
+	'cloudIntegrations/hosting/disconnected': {
+		'hostingProvider.provider': IntegrationId;
+		'hostingProvider.key': string;
+	};
+	/** Sent when a cloud-based issue provider is connected */
+	'cloudIntegrations/issue/connected': {
+		'issueProvider.provider': IntegrationId;
+		'issueProvider.key': string;
+	};
+	/** Sent when a cloud-based issue provider is disconnected */
+	'cloudIntegrations/issue/disconnected': {
+		'issueProvider.provider': IntegrationId;
+		'issueProvider.key': string;
+	};
+	/** Sent when a user chooses to manage the cloud integrations */
+	'cloudIntegrations/settingsOpened': {
+		'integration.id': IssueIntegrationId | undefined;
+	};
+
+	/** Sent when a code suggestion is archived */
+	codeSuggestionArchived: {
+		provider: string | undefined;
+		'repository.visibility': 'private' | 'public' | 'local' | undefined;
+		/** Named for compatibility with other GK surfaces */
+		repoPrivacy: 'private' | 'public' | 'local' | undefined;
+		/** Named for compatibility with other GK surfaces */
+		draftId: string;
+		/** Named for compatibility with other GK surfaces */
+		reason: 'committed' | 'rejected' | 'accepted';
+	};
+	/** Sent when a code suggestion is created */
+	codeSuggestionCreated: {
+		provider: string | undefined;
+		'repository.visibility': 'private' | 'public' | 'local' | undefined;
+		/** Named for compatibility with other GK surfaces */
+		repoPrivacy: 'private' | 'public' | 'local' | undefined;
+		/** Named for compatibility with other GK surfaces */
+		draftId: string;
+		/** Named for compatibility with other GK surfaces */
+		draftPrivacy: 'public' | 'private' | 'invite_only' | 'provider_access';
+		/** Named for compatibility with other GK surfaces */
+		filesChanged: number;
+		/** Named for compatibility with other GK surfaces */
+		source: 'reviewMode';
+	};
+	/** Sent when a code suggestion is opened */
+	codeSuggestionViewed: {
+		provider: string | undefined;
+		'repository.visibility': 'private' | 'public' | 'local' | undefined;
+		/** Named for compatibility with other GK surfaces */
+		repoPrivacy: 'private' | 'public' | 'local' | undefined;
+		/** Named for compatibility with other GK surfaces */
+		draftId: string;
+		/** Named for compatibility with other GK surfaces */
+		draftPrivacy: 'public' | 'private' | 'invite_only' | 'provider_access';
+		/** Named for compatibility with other GK surfaces */
+		source?: string;
+	};
+
+	/** Sent when a GitLens command is executed */
+	command:
+		| {
+				command: Commands.GitCommands;
+				context?: { mode?: string; submode?: string };
+		  }
+		| {
+				command: string;
+				context?: undefined;
+				webview?: string;
+		  };
+	/** Sent when a VS Code command is executed by a GitLens provided action */
+	'command/core': { command: string };
+
+	/** Sent when the user takes an action on a launchpad item */
+	'launchpad/title/action': LaunchpadEventData & {
+		action: 'feedback' | 'open-on-gkdev' | 'refresh' | 'settings';
+	};
+
+	/** Sent when the user takes an action on a launchpad item */
+	'launchpad/action': LaunchpadEventData & {
+		action:
+			| 'open'
+			| 'code-suggest'
+			| 'merge'
+			| 'soft-open'
+			| 'switch'
+			| 'switch-and-code-suggest'
+			| 'show-overview'
+			| 'open-changes'
+			| 'open-in-graph'
+			| 'pin'
+			| 'unpin'
+			| 'snooze'
+			| 'unsnooze'
+			| 'open-suggestion'
+			| 'open-suggestion-browser';
+	} & Partial<Record<`item.${string}`, string | number | boolean>>;
+	/** Sent when the user changes launchpad configuration settings */
+	'launchpad/configurationChanged': {
+		'config.launchpad.staleThreshold': number | null;
+		'config.launchpad.ignoredOrganizations': number;
+		'config.launchpad.ignoredRepositories': number;
+		'config.launchpad.indicator.enabled': boolean;
+		'config.launchpad.indicator.openInEditor': boolean;
+		'config.launchpad.indicator.icon': 'default' | 'group';
+		'config.launchpad.indicator.label': false | 'item' | 'counts';
+		'config.launchpad.indicator.useColors': boolean;
+		'config.launchpad.indicator.groups': string;
+		'config.launchpad.indicator.polling.enabled': boolean;
+		'config.launchpad.indicator.polling.interval': number;
+	};
+	/** Sent when the user expands/collapses a launchpad group */
+	'launchpad/groupToggled': LaunchpadEventData & {
+		group: LaunchpadGroups;
+		collapsed: boolean;
+	};
+	/** Sent when the user opens launchpad; use `instance` to correlate a launchpad "session" */
+	'launchpad/open': LaunchpadEventDataBase;
+	/** Sent when the launchpad is opened; use `instance` to correlate a launchpad "session" */
+	'launchpad/opened': LaunchpadEventData & {
+		connected: boolean;
+	};
+	/** Sent when the launchpad has "reloaded" (while open, e.g. user refreshed or back button) and is disconnected; use `instance` to correlate a launchpad "session" */
+	'launchpad/steps/connect': LaunchpadEventData & {
+		connected: boolean;
+	};
+	/** Sent when the launchpad has "reloaded" (while open, e.g. user refreshed or back button) and is connected; use `instance` to correlate a launchpad "session" */
+	'launchpad/steps/main': LaunchpadEventData & {
+		connected: boolean;
+	};
+	/** Sent when the user opens the details of a launchpad item (e.g. click on an item); use `instance` to correlate a launchpad "session" */
+	'launchpad/steps/details': LaunchpadEventData & {
+		action: 'select';
+	} & Partial<Record<`item.${string}`, string | number | boolean>>;
+	/** Sent when the user hides the launchpad indicator */
+	'launchpad/indicator/hidden': void;
+	/** Sent when the launchpad indicator loads (with data) for the first time ever for this device */
+	'launchpad/indicator/firstLoad': void;
+	/** Sent when a launchpad operation is taking longer than a set timeout to complete */
+	'launchpad/operation/slow': {
+		timeout: number;
+		operation: 'getMyPullRequests' | 'getCodeSuggestions' | 'getEnrichedItems' | 'getCodeSuggestionCounts';
+		duration: number;
+	};
+
+	/** Sent when a PR review was started in the inspect overview */
+	openReviewMode: {
+		provider: string;
+		'repository.visibility': 'private' | 'public' | 'local' | undefined;
+		/** Provided for compatibility with other GK surfaces */
+		repoPrivacy: 'private' | 'public' | 'local' | undefined;
+		filesChanged: number;
+		/** Provided for compatibility with other GK surfaces */
+		source: Sources;
+	};
+
+	/** Sent when the "context" of the workspace changes (e.g. repo added, integration connected, etc) */
+	'providers/context': void;
+
+	/** Sent when we've loaded all the git providers and their repositories */
+	'providers/registrationComplete': {
+		'config.git.autoRepositoryDetection': boolean | 'subFolders' | 'openEditors' | undefined;
+	};
+
+	/** Sent when a local (Git remote-based) hosting provider is connected */
+	'remoteProviders/connected': {
+		'hostingProvider.provider': IntegrationId;
+		'hostingProvider.key': string;
+
+		/** @deprecated */
+		'remoteProviders.key': string;
+	};
+	/** Sent when a local (Git remote-based) hosting provider is disconnected */
+	'remoteProviders/disconnected': {
+		'hostingProvider.provider': IntegrationId;
+		'hostingProvider.key': string;
+
+		/** @deprecated */
+		'remoteProviders.key': string;
+	};
+
+	/** Sent when the workspace's repositories change */
+	'repositories/changed': {
+		'repositories.added': number;
+		'repositories.removed': number;
+	};
+	/** Sent when the workspace's repository visibility is first requested */
+	'repositories/visibility': {
+		'repositories.visibility': 'private' | 'public' | 'local' | 'mixed';
+	};
+
+	/** Sent when a repository is opened */
+	'repository/opened': {
+		'repository.id': string;
+		'repository.scheme': string;
+		'repository.closed': boolean;
+		'repository.folder.scheme': string | undefined;
+		'repository.provider.id': string;
+		'repository.remoteProviders': string;
+	};
+	/** Sent when a repository's visibility is first requested */
+	'repository/visibility': {
+		'repository.visibility': 'private' | 'public' | 'local' | undefined;
+		'repository.id': string | undefined;
+		'repository.scheme': string | undefined;
+		'repository.closed': boolean | undefined;
+		'repository.folder.scheme': string | undefined;
+		'repository.provider.id': string | undefined;
+	};
+
+	/** Sent when the subscription is loaded */
+	subscription: SubscriptionEventData;
+	'subscription/action':
+		| {
+				action:
+					| 'sign-up'
+					| 'sign-in'
+					| 'sign-out'
+					| 'manage'
+					| 'reactivate'
+					| 'resend-verification'
+					| 'pricing'
+					| 'start-preview-trial'
+					| 'upgrade';
+		  }
+		| {
+				action: 'visibility';
+				visible: boolean;
+		  };
+	/** Sent when the subscription changes */
+	'subscription/changed': SubscriptionEventData;
+
+	/** Sent when a "tracked feature" is interacted with, today that is only when webview/webviewView/custom editor is shown */
+	'usage/track': {
+		'usage.key': TrackedUsageKeys;
+		'usage.count': number;
+	};
+
+	/** Sent when the walkthrough is opened */
+	walkthrough: {
+		step?:
+			| 'get-started'
+			| 'core-features'
+			| 'pro-features'
+			| 'pro-trial'
+			| 'pro-upgrade'
+			| 'pro-reactivate'
+			| 'pro-paid'
+			| 'visualize'
+			| 'launchpad'
+			| 'code-collab'
+			| 'integrations'
+			| 'more';
+	};
+};
+
+export type LaunchpadTelemetryContext = LaunchpadEventData;
+
+type LaunchpadEventDataBase = {
+	instance: number;
+	'initialState.group': string | undefined;
+	'initialState.selectTopItem': boolean;
+};
+
+type LaunchpadEventData = LaunchpadEventDataBase &
+	(
+		| Partial<{ 'items.error': string }>
+		| Partial<
+				{
+					'items.count': number;
+					'items.timings.prs': number;
+					'items.timings.codeSuggestionCounts': number;
+					'items.timings.enrichedItems': number;
+					'groups.count': number;
+				} & Record<`groups.${LaunchpadGroups}.count`, number> &
+					Record<`groups.${LaunchpadGroups}.collapsed`, boolean | undefined>
+		  >
+	);
+
+type LaunchpadGroups =
+	| 'current-branch'
+	| 'pinned'
+	| 'mergeable'
+	| 'blocked'
+	| 'follow-up'
+	| 'needs-review'
+	| 'waiting-for-review'
+	| 'draft'
+	| 'other'
+	| 'snoozed';
+
+type SubscriptionEventData = {
+	'subscription.state'?: SubscriptionState;
+	'subscription.status'?:
+		| 'verification'
+		| 'free'
+		| 'preview'
+		| 'preview-expired'
+		| 'trial'
+		| 'trial-expired'
+		| 'trial-reactivation-eligible'
+		| 'paid'
+		| 'unknown';
+} & Partial<
+	Record<`account.${string}`, string | number | boolean | undefined> &
+		Record<`subscription.${string}`, string | number | boolean | undefined> &
+		Record<`subscription.previewTrial.${string}`, string | number | boolean | undefined> &
+		Record<`previous.account.${string}`, string | number | boolean | undefined> &
+		Record<`previous.subscription.${string}`, string | number | boolean | undefined> &
+		Record<`previous.subscription.previewTrial.${string}`, string | number | boolean | undefined>
+>;

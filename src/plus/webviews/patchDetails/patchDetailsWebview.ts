@@ -1,7 +1,8 @@
 import type { ConfigurationChangeEvent } from 'vscode';
 import { Disposable, env, Uri, window } from 'vscode';
+import { extractDraftMessage } from '../../../ai/aiProviderService';
 import { getAvatarUri } from '../../../avatars';
-import type { ContextKeys } from '../../../constants';
+import type { ContextKeys, Sources } from '../../../constants';
 import { Commands, GlyphChars, previewBadge } from '../../../constants';
 import type { Container } from '../../../container';
 import { CancellationError } from '../../../errors';
@@ -46,6 +47,7 @@ import type { IpcCallMessageType, IpcMessage } from '../../../webviews/protocol'
 import type { WebviewHost, WebviewProvider } from '../../../webviews/webviewProvider';
 import type { WebviewShowOptions } from '../../../webviews/webviewsController';
 import { showPatchesView } from '../../drafts/actions';
+import { getDraftEntityIdentifier } from '../../drafts/draftsService';
 import type { OrganizationMember } from '../../gk/account/organization';
 import { confirmDraftStorage, ensureAccount } from '../../utils';
 import type { ShowInCommitGraphCommandArgs } from '../graph/protocol';
@@ -55,6 +57,7 @@ import type {
 	CreateDraft,
 	CreatePatchParams,
 	DidExplainParams,
+	DidGenerateParams,
 	DraftPatchCheckedParams,
 	DraftUserSelection,
 	ExecuteFileActionParams,
@@ -80,6 +83,7 @@ import {
 	DidChangePreferencesNotification,
 	DraftPatchCheckedCommand,
 	ExplainRequest,
+	GenerateRequest,
 	OpenFileCommand,
 	OpenFileComparePreviousCommand,
 	OpenFileCompareWorkingCommand,
@@ -239,6 +243,10 @@ export class PatchDetailsWebviewProvider
 				void this.explainRequest(ExplainRequest, e);
 				break;
 
+			case GenerateRequest.is(e):
+				void this.generateRequest(GenerateRequest, e);
+				break;
+
 			case OpenFileComparePreviousCommand.is(e):
 				void this.openFileComparisonWithPrevious(e.params);
 				break;
@@ -345,7 +353,7 @@ export class PatchDetailsWebviewProvider
 		};
 	}
 
-	private onContextChanged(key: ContextKeys) {
+	private onContextChanged(key: keyof ContextKeys) {
 		if (['gitlens:gk:organization:ai:enabled', 'gitlens:gk:organization:drafts:enabled'].includes(key)) {
 			this._context.orgSettings = this.getOrgSettings();
 			this.updateState();
@@ -354,8 +362,8 @@ export class PatchDetailsWebviewProvider
 
 	private getOrgSettings(): State['orgSettings'] {
 		return {
-			ai: getContext<boolean>('gitlens:gk:organization:ai:enabled', false),
-			byob: getContext<boolean>('gitlens:gk:organization:drafts:byob', false),
+			ai: getContext('gitlens:gk:organization:ai:enabled', false),
+			byob: getContext('gitlens:gk:organization:drafts:byob', false),
 		};
 	}
 
@@ -630,7 +638,10 @@ export class PatchDetailsWebviewProvider
 		userSelections,
 	}: CreatePatchParams): Promise<void> {
 		if (
-			!(await ensureAccount('Cloud Patches are a Preview feature and require an account.', this.container)) ||
+			!(await ensureAccount(this.container, 'Cloud Patches are a Preview feature and require an account.', {
+				source: 'cloud-patches',
+				detail: 'create',
+			})) ||
 			!(await confirmDraftStorage(this.container))
 		) {
 			return;
@@ -766,19 +777,25 @@ export class PatchDetailsWebviewProvider
 	private async trackArchiveDraft(draft: Draft) {
 		draft = await this.ensureDraftContent(draft);
 		const patch = draft.changesets?.[0].patches.find(p => isRepoLocated(p.repository));
-		if (patch == null) return;
 
-		const repo = patch.repository as Repository;
-		const remote = await this.container.git.getBestRemoteWithProvider(repo.uri);
-		if (remote == null) return;
+		let repoPrivacy;
+		if (isRepository(patch?.repository)) {
+			repoPrivacy = await this.container.git.visibility(patch.repository.uri);
+		}
 
-		const provider = remote.provider.id;
+		const entity = getDraftEntityIdentifier(draft, patch);
 
-		this.container.telemetry.sendEvent('codeSuggestionArchived', {
-			provider: provider,
-			draftId: draft.id,
-			reason: draft.archivedReason!,
-		});
+		this.container.telemetry.sendEvent(
+			'codeSuggestionArchived',
+			{
+				provider: entity?.provider,
+				'repository.visibility': repoPrivacy,
+				repoPrivacy: repoPrivacy,
+				draftId: draft.id,
+				reason: draft.archivedReason!,
+			},
+			{ source: 'patchDetails' },
+		);
 	}
 
 	private async explainRequest<T extends typeof ExplainRequest>(requestType: T, msg: IpcCallMessageType<T>) {
@@ -805,6 +822,48 @@ export class PatchDetailsWebviewProvider
 			if (summary == null) throw new Error('Error retrieving content');
 
 			params = { summary: summary };
+		} catch (ex) {
+			debugger;
+			params = { error: { message: ex.message } };
+		}
+
+		void this.host.respond(requestType, msg, params);
+	}
+
+	private async generateRequest<T extends typeof GenerateRequest>(requestType: T, msg: IpcCallMessageType<T>) {
+		let repo: Repository | undefined;
+		if (this._context.create?.changes != null) {
+			for (const change of this._context.create.changes.values()) {
+				if (change.repository) {
+					repo = change.repository;
+					break;
+				}
+			}
+		}
+
+		if (!repo) {
+			void this.host.respond(requestType, msg, { error: { message: 'Unable to find changes' } });
+			return;
+		}
+
+		let params: DidGenerateParams;
+
+		try {
+			// TODO@eamodio HACK -- only works for the first patch
+			// const patch = await this.getDraftPatch(this._context.draft);
+			// if (patch == null) throw new Error('Unable to find patch');
+
+			// const commit = await this.getOrCreateCommitForPatch(patch.gkRepositoryId);
+			// if (commit == null) throw new Error('Unable to find commit');
+
+			const summary = await (
+				await this.container.ai
+			)?.generateDraftMessage(repo, {
+				progress: { location: { viewId: this.host.id } },
+			});
+			if (summary == null) throw new Error('Error retrieving content');
+
+			params = extractDraftMessage(summary);
 		} catch (ex) {
 			debugger;
 			params = { error: { message: ex.message } };
@@ -1074,27 +1133,31 @@ export class PatchDetailsWebviewProvider
 		});
 	}
 
-	private async trackViewDraft(draft: Draft | LocalDraft | undefined, source?: string) {
+	private async trackViewDraft(draft: Draft | LocalDraft | undefined, source?: Sources | undefined) {
 		if (draft?.draftType !== 'cloud' || draft.type !== 'suggested_pr_change') return;
 
 		draft = await this.ensureDraftContent(draft);
 		const patch = draft.changesets?.[0].patches.find(p => isRepoLocated(p.repository));
-		if (patch == null) return;
 
-		const repo = patch.repository as Repository;
-		const remote = await this.container.git.getBestRemoteWithProvider(repo.uri);
-		if (remote == null) return;
+		let repoPrivacy;
+		if (isRepository(patch?.repository)) {
+			repoPrivacy = await this.container.git.visibility(patch.repository.uri);
+		}
 
-		const provider = remote.provider.id;
-		const repoPrivacy = await this.container.git.visibility(repo.path);
+		const entity = getDraftEntityIdentifier(draft, patch);
 
-		this.container.telemetry.sendEvent('codeSuggestionViewed', {
-			provider: provider,
-			source: source,
-			repoPrivacy: repoPrivacy,
-			draftPrivacy: draft.visibility,
-			draftId: draft.id,
-		});
+		this.container.telemetry.sendEvent(
+			'codeSuggestionViewed',
+			{
+				provider: entity?.provider,
+				'repository.visibility': repoPrivacy,
+				repoPrivacy: repoPrivacy,
+				draftId: draft.id,
+				draftPrivacy: draft.visibility,
+				source: source,
+			},
+			{ source: source ?? 'patchDetails' },
+		);
 	}
 
 	private async updateViewDraftState(draft: LocalDraft | Draft | undefined) {

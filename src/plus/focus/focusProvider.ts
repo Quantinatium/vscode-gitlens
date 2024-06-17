@@ -7,21 +7,25 @@ import { CancellationError } from '../../errors';
 import { openComparisonChanges } from '../../git/actions/commit';
 import type { Account } from '../../git/models/author';
 import type { GitBranch } from '../../git/models/branch';
-import type { SearchedIssue } from '../../git/models/issue';
+import { getLocalBranchByUpstream } from '../../git/models/branch';
 import type { SearchedPullRequest } from '../../git/models/pullRequest';
 import { getComparisonRefsForPullRequest } from '../../git/models/pullRequest';
 import type { GitRemote } from '../../git/models/remote';
 import type { Repository } from '../../git/models/repository';
 import type { CodeSuggestionCounts, Draft } from '../../gk/models/drafts';
-import { getPathFromProviderIdentity } from '../../gk/models/repositoryIdentities';
 import { executeCommand, registerCommand } from '../../system/command';
 import { configuration } from '../../system/configuration';
-import { getSettledValue } from '../../system/promise';
+import { debug, log } from '../../system/decorators/log';
+import { Logger } from '../../system/logger';
+import { getLogScope } from '../../system/logger.scope';
+import type { TimedResult } from '../../system/promise';
+import { getSettledValue, timedWithSlowThreshold } from '../../system/promise';
 import { openUrl } from '../../system/utils';
 import type { UriTypes } from '../../uris/deepLinks/deepLink';
 import { DeepLinkActionType, DeepLinkType } from '../../uris/deepLinks/deepLink';
 import { showInspectView } from '../../webviews/commitDetails/actions';
 import type { ShowWipArgs } from '../../webviews/commitDetails/protocol';
+import type { IntegrationResult } from '../integrations/integration';
 import type { EnrichablePullRequest, ProviderActionablePullRequest } from '../integrations/providers/models';
 import {
 	getActionablePullRequests,
@@ -59,6 +63,42 @@ export const focusGroups = [
 	'snoozed',
 ] as const;
 export type FocusGroup = (typeof focusGroups)[number];
+
+export const focusPriorityGroups = [
+	'mergeable',
+	'blocked',
+	'follow-up',
+	'needs-review',
+] satisfies readonly FocusPriorityGroup[] as readonly FocusGroup[];
+export type FocusPriorityGroup = Extract<FocusGroup, 'mergeable' | 'blocked' | 'follow-up' | 'needs-review'>;
+
+export const focusGroupIconMap = new Map<FocusGroup, `$(${string})`>([
+	['current-branch', '$(git-branch)'],
+	['pinned', '$(pinned)'],
+	['mergeable', '$(rocket)'],
+	['blocked', '$(error)'], //bracket-error
+	['follow-up', '$(report)'],
+	// ['needs-attention', '$(bell-dot)'], //comment-unresolved
+	['needs-review', '$(comment-unresolved)'], // feedback
+	['waiting-for-review', '$(gitlens-clock)'],
+	['draft', '$(git-pull-request-draft)'],
+	['other', '$(ellipsis)'],
+	['snoozed', '$(bell-slash)'],
+]);
+
+export const focusGroupLabelMap = new Map<FocusGroup, string>([
+	['current-branch', 'Current Branch'],
+	['pinned', 'Pinned'],
+	['mergeable', 'Ready to Merge'],
+	['blocked', 'Blocked'],
+	['follow-up', 'Requires Follow-up'],
+	// ['needs-attention', 'Needs Your Attention'],
+	['needs-review', 'Needs Your Review'],
+	['waiting-for-review', 'Waiting for Review'],
+	['draft', 'Draft'],
+	['other', 'Other'],
+	['snoozed', 'Snoozed'],
+]);
 
 export const focusCategoryToGroupMap = new Map<FocusActionCategory, FocusGroup>([
 	// ['pinned', 'pinned'],
@@ -134,7 +174,7 @@ export type FocusPullRequest = EnrichablePullRequest & ProviderActionablePullReq
 export type FocusItem = FocusPullRequest & {
 	currentViewer: Account;
 	codeSuggestionsCount: number;
-	codeSuggestions?: Draft[];
+	codeSuggestions?: TimedResult<Draft[]>;
 	isNew: boolean;
 	actionableCategory: FocusActionCategory;
 	suggestedActions: FocusAction[];
@@ -155,15 +195,30 @@ type CachedFocusPromise<T> = {
 const cacheExpiration = 1000 * 60 * 30; // 30 minutes
 
 type PullRequestsWithSuggestionCounts = {
-	prs: SearchedPullRequest[] | undefined;
-	suggestionCounts: CodeSuggestionCounts | undefined;
+	prs: IntegrationResult<SearchedPullRequest[] | undefined> | undefined;
+	suggestionCounts: TimedResult<CodeSuggestionCounts | undefined> | undefined;
 };
 
-export interface FocusRefreshEvent {
-	items: FocusItem[];
-}
+export type FocusRefreshEvent = FocusCategorizedResult;
 
 export const supportedFocusIntegrations = [HostingIntegrationId.GitHub];
+
+export type FocusCategorizedResult =
+	| {
+			items: FocusItem[];
+			timings?: FocusCategorizedTimings;
+			error?: never;
+	  }
+	| {
+			error: Error;
+			items?: never;
+	  };
+
+export interface FocusCategorizedTimings {
+	prs: number | undefined;
+	codeSuggestionCounts: number | undefined;
+	enrichedItems: number | undefined;
+}
 
 export class FocusProvider implements Disposable {
 	private readonly _onDidChange = new EventEmitter<void>();
@@ -189,19 +244,20 @@ export class FocusProvider implements Disposable {
 		this._disposable.dispose();
 	}
 
-	private _issues: CachedFocusPromise<SearchedIssue[]> | undefined;
-	private async getIssues(options?: { cancellation?: CancellationToken; force?: boolean }) {
-		if (options?.force || this._issues == null || this._issues.expiresAt < Date.now()) {
-			this._issues = {
-				promise: this.container.integrations.getMyIssues([HostingIntegrationId.GitHub], options?.cancellation),
-				expiresAt: Date.now() + cacheExpiration,
-			};
-		}
+	// private _issues: CachedFocusPromise<SearchedIssue[]> | undefined;
+	// private async getIssues(options?: { cancellation?: CancellationToken; force?: boolean }) {
+	// 	if (options?.force || this._issues == null || this._issues.expiresAt < Date.now()) {
+	// 		this._issues = {
+	// 			promise: this.container.integrations.getMyIssues([HostingIntegrationId.GitHub], options?.cancellation),
+	// 			expiresAt: Date.now() + cacheExpiration,
+	// 		};
+	// 	}
 
-		return this._issues?.promise;
-	}
+	// 	return this._issues?.promise;
+	// }
 
 	private _prs: CachedFocusPromise<PullRequestsWithSuggestionCounts> | undefined;
+	@debug<FocusProvider['getPullRequestsWithSuggestionCounts']>({ args: { 0: o => `force=${o?.force}` } })
 	private async getPullRequestsWithSuggestionCounts(options?: { cancellation?: CancellationToken; force?: boolean }) {
 		if (options?.force || this._prs == null || this._prs.expiresAt < Date.now()) {
 			this._prs = {
@@ -213,28 +269,58 @@ export class FocusProvider implements Disposable {
 		return this._prs?.promise;
 	}
 
+	@debug<FocusProvider['fetchPullRequestsWithSuggestionCounts']>({ args: false })
 	private async fetchPullRequestsWithSuggestionCounts(cancellation?: CancellationToken) {
+		const scope = getLogScope();
+
 		const [prsResult, subscriptionResult] = await Promise.allSettled([
-			this.container.integrations.getMyPullRequests([HostingIntegrationId.GitHub], cancellation),
+			withDurationAndSlowEventOnTimeout(
+				this.container.integrations.getMyPullRequests([HostingIntegrationId.GitHub], cancellation),
+				'getMyPullRequests',
+				this.container,
+			),
 			this.container.subscription.getSubscription(true),
 		]);
 
-		const prs = getSettledValue(prsResult);
+		if (prsResult.status === 'rejected') {
+			Logger.error(prsResult.reason, scope, 'Failed to get pull requests');
+			throw prsResult.reason;
+		}
+
+		const prs = getSettledValue(prsResult)?.value;
+		if (prs?.error != null) {
+			Logger.error(prs.error, scope, 'Failed to get pull requests');
+			throw prs.error;
+		}
+
 		const subscription = getSettledValue(subscriptionResult);
 
-		const suggestionCounts =
-			prs?.length && subscription?.account != null
-				? await this.container.drafts.getCodeSuggestionCounts(prs.map(pr => pr.pullRequest))
-				: undefined;
+		let suggestionCounts;
+		if (prs?.value?.length && subscription?.account != null) {
+			try {
+				suggestionCounts = await withDurationAndSlowEventOnTimeout(
+					this.container.drafts.getCodeSuggestionCounts(prs.value.map(pr => pr.pullRequest)),
+					'getCodeSuggestionCounts',
+					this.container,
+				);
+			} catch (ex) {
+				Logger.error(ex, scope, 'Failed to get code suggestion counts');
+			}
+		}
 
 		return { prs: prs, suggestionCounts: suggestionCounts };
 	}
 
-	private _enrichedItems: CachedFocusPromise<EnrichedItem[]> | undefined;
+	private _enrichedItems: CachedFocusPromise<TimedResult<EnrichedItem[]>> | undefined;
+	@debug<FocusProvider['getEnrichedItems']>({ args: { 0: o => `force=${o?.force}` } })
 	private async getEnrichedItems(options?: { cancellation?: CancellationToken; force?: boolean }) {
 		if (options?.force || this._enrichedItems == null || this._enrichedItems.expiresAt < Date.now()) {
 			this._enrichedItems = {
-				promise: this.container.enrichments.get(undefined, options?.cancellation),
+				promise: withDurationAndSlowEventOnTimeout(
+					this.container.enrichments.get(undefined, options?.cancellation),
+					'getEnrichedItems',
+					this.container,
+				),
 				expiresAt: Date.now() + cacheExpiration,
 			};
 		}
@@ -242,13 +328,15 @@ export class FocusProvider implements Disposable {
 		return this._enrichedItems?.promise;
 	}
 
-	private _groupedIds: Set<string> | undefined;
-
-	private _codeSuggestions: Map<string, CachedFocusPromise<Draft[]>> | undefined;
+	private _codeSuggestions: Map<string, CachedFocusPromise<TimedResult<Draft[]>>> | undefined;
+	@debug<FocusProvider['getCodeSuggestions']>({
+		args: { 0: i => `${i.id} (${i.provider.name} ${i.type})`, 1: o => `force=${o?.force}` },
+	})
 	private async getCodeSuggestions(item: FocusItem, options?: { force?: boolean }) {
 		if (item.codeSuggestionsCount < 1) return undefined;
+
 		if (this._codeSuggestions == null || options?.force) {
-			this._codeSuggestions = new Map<string, CachedFocusPromise<Draft[]>>();
+			this._codeSuggestions = new Map<string, CachedFocusPromise<TimedResult<Draft[]>>>();
 		}
 
 		if (
@@ -257,9 +345,13 @@ export class FocusProvider implements Disposable {
 			this._codeSuggestions.get(item.uuid)!.expiresAt < Date.now()
 		) {
 			this._codeSuggestions.set(item.uuid, {
-				promise: this.container.drafts.getCodeSuggestions(item, HostingIntegrationId.GitHub, {
-					includeArchived: false,
-				}),
+				promise: withDurationAndSlowEventOnTimeout(
+					this.container.drafts.getCodeSuggestions(item, HostingIntegrationId.GitHub, {
+						includeArchived: false,
+					}),
+					'getCodeSuggestions',
+					this.container,
+				),
 				expiresAt: Date.now() + cacheExpiration,
 			});
 		}
@@ -267,8 +359,9 @@ export class FocusProvider implements Disposable {
 		return this._codeSuggestions.get(item.uuid)!.promise;
 	}
 
+	@log()
 	refresh() {
-		this._issues = undefined;
+		// this._issues = undefined;
 		this._prs = undefined;
 		this._enrichedItems = undefined;
 		this._codeSuggestions = undefined;
@@ -276,6 +369,7 @@ export class FocusProvider implements Disposable {
 		this._onDidChange.fire();
 	}
 
+	@log<FocusProvider['pin']>({ args: { 0: i => `${i.id} (${i.provider.name} ${i.type})` } })
 	async pin(item: FocusItem) {
 		item.viewer.pinned = true;
 		this._onDidChange.fire();
@@ -285,6 +379,7 @@ export class FocusProvider implements Disposable {
 		this._onDidChange.fire();
 	}
 
+	@log<FocusProvider['unpin']>({ args: { 0: i => `${i.id} (${i.provider.name} ${i.type})` } })
 	async unpin(item: FocusItem) {
 		item.viewer.pinned = false;
 		this._onDidChange.fire();
@@ -297,6 +392,7 @@ export class FocusProvider implements Disposable {
 		this._onDidChange.fire();
 	}
 
+	@log<FocusProvider['snooze']>({ args: { 0: i => `${i.id} (${i.provider.name} ${i.type})` } })
 	async snooze(item: FocusItem) {
 		item.viewer.snoozed = true;
 		this._onDidChange.fire();
@@ -306,6 +402,7 @@ export class FocusProvider implements Disposable {
 		this._onDidChange.fire();
 	}
 
+	@log<FocusProvider['unsnooze']>({ args: { 0: i => `${i.id} (${i.provider.name} ${i.type})` } })
 	async unsnooze(item: FocusItem) {
 		item.viewer.snoozed = false;
 		this._onDidChange.fire();
@@ -318,6 +415,7 @@ export class FocusProvider implements Disposable {
 		this._onDidChange.fire();
 	}
 
+	@log<FocusProvider['merge']>({ args: { 0: i => `${i.id} (${i.provider.name} ${i.type})` } })
 	async merge(item: FocusItem): Promise<void> {
 		if (item.graphQLId == null || item.headRef?.oid == null) return;
 		// TODO: Include other providers.
@@ -333,14 +431,16 @@ export class FocusProvider implements Disposable {
 		this.refresh();
 	}
 
+	@log<FocusProvider['open']>({ args: { 0: i => `${i.id} (${i.provider.name} ${i.type})` } })
 	open(item: FocusItem): void {
 		if (item.url == null) return;
 		void openUrl(item.url);
 		this._prs = undefined;
 	}
 
+	@log<FocusProvider['openCodeSuggestion']>({ args: { 0: i => `${i.id} (${i.provider.name} ${i.type})` } })
 	openCodeSuggestion(item: FocusItem, target: string) {
-		const draft = item.codeSuggestions?.find(d => d.id === target);
+		const draft = item.codeSuggestions?.value?.find(d => d.id === target);
 		if (draft == null) return;
 		this._codeSuggestions?.delete(item.uuid);
 		this._prs = undefined;
@@ -350,10 +450,12 @@ export class FocusProvider implements Disposable {
 		});
 	}
 
+	@log()
 	openCodeSuggestionInBrowser(target: string) {
 		void openUrl(this.container.drafts.generateWebUrl(target));
 	}
 
+	@log<FocusProvider['switchTo']>({ args: { 0: i => `${i.id} (${i.provider.name} ${i.type})` } })
 	async switchTo(item: FocusItem, startCodeSuggestion: boolean = false): Promise<void> {
 		if (item.openRepository?.localBranch?.current) {
 			void showInspectView({
@@ -377,6 +479,7 @@ export class FocusProvider implements Disposable {
 		await this.container.deepLinks.processDeepLinkUri(deepLinkUrl, false);
 	}
 
+	@log<FocusProvider['openChanges']>({ args: { 0: i => `${i.id} (${i.provider.name} ${i.type})` } })
 	async openChanges(item: FocusItem) {
 		if (!item.openRepository?.localBranch?.current) return;
 		await this.switchTo(item);
@@ -398,10 +501,15 @@ export class FocusProvider implements Disposable {
 		}
 	}
 
+	@log<FocusProvider['openInGraph']>({ args: { 0: i => `${i.id} (${i.provider.name} ${i.type})` } })
 	async openInGraph(item: FocusItem) {
 		const deepLinkUrl = this.getItemBranchDeepLink(item);
 		if (deepLinkUrl == null) return;
 		await this.container.deepLinks.processDeepLinkUri(deepLinkUrl, false);
+	}
+
+	generateWebUrl(): string {
+		return this.container.generateWebGkDevUrl('/launchpad');
 	}
 
 	private getItemBranchDeepLink(item: FocusItem, action?: DeepLinkActionType): Uri | undefined {
@@ -426,45 +534,66 @@ export class FocusProvider implements Disposable {
 		);
 	}
 
-	async getMatchingOpenRepository(pr: EnrichablePullRequest): Promise<OpenRepository | undefined> {
-		for (const repo of this.container.git.openRepositories) {
-			const matchingRemote = (
-				await repo.getRemotes({
-					filter: r =>
-						r.matches(pr.repoIdentity.remote.url!) ||
-						r.matches(
-							pr.repoIdentity.provider.domain,
-							getPathFromProviderIdentity(pr.repoIdentity.provider),
-						),
-				})
-			)?.[0];
-			if (matchingRemote == null) continue;
+	private async getMatchingOpenRepository(
+		pr: EnrichablePullRequest,
+		matchingRemoteMap: Map<string, [Repository, GitRemote]>,
+	): Promise<OpenRepository | undefined> {
+		if (pr.repoIdentity.remote.url == null) return undefined;
 
-			const matchingRemoteBranch = (
-				await repo.getBranches({
-					filter: b =>
-						b.remote &&
-						b.getRemoteName() === matchingRemote.name &&
-						b.getNameWithoutRemote() === pr.headRef?.name,
-				})
-			)?.values[0];
-			if (matchingRemoteBranch == null) continue;
+		const match = matchingRemoteMap.get(pr.repoIdentity.remote.url);
+		if (match == null) return undefined;
 
-			const matchingLocalBranches = (
-				await repo.getBranches({ filter: b => b.upstream?.name === matchingRemoteBranch.name })
-			)?.values;
-			const matchingLocalBranch = matchingLocalBranches?.find(b => b.current) ?? matchingLocalBranches?.[0];
+		const [repo, remote] = match;
+		const remoteBranchName = `${remote.name}/${pr.refs?.head.branch ?? pr.headRef?.name}`;
+		const matchingLocalBranch = await getLocalBranchByUpstream(repo, remoteBranchName);
 
-			return { repo: repo, remote: matchingRemote, localBranch: matchingLocalBranch };
-		}
-
-		return undefined;
+		return { repo: repo, remote: remote, localBranch: matchingLocalBranch };
 	}
 
+	private async getMatchingRemoteMap(actionableItems: FocusPullRequest[]) {
+		const uniqueRemoteUrls = new Set<string>();
+		for (const item of actionableItems) {
+			if (item.repoIdentity.remote.url != null) {
+				uniqueRemoteUrls.add(item.repoIdentity.remote.url);
+			}
+		}
+
+		// Get the repo/remote pairs for the unique remote urls
+		const repoRemotes = new Map<string, [Repository, GitRemote]>();
+
+		for (const repo of this.container.git.openRepositories) {
+			const remotes = await repo.getRemotes();
+			for (const remote of remotes) {
+				if (uniqueRemoteUrls.has(remote.url)) {
+					repoRemotes.set(remote.url, [repo, remote]);
+					uniqueRemoteUrls.delete(remote.url);
+
+					if (uniqueRemoteUrls.size === 0) return repoRemotes;
+				} else {
+					for (const url of uniqueRemoteUrls) {
+						if (remote.matches(url)) {
+							repoRemotes.set(url, [repo, remote]);
+							uniqueRemoteUrls.delete(url);
+
+							if (uniqueRemoteUrls.size === 0) return repoRemotes;
+
+							break;
+						}
+					}
+				}
+			}
+		}
+
+		return repoRemotes;
+	}
+
+	@log<FocusProvider['getCategorizedItems']>({ args: { 0: o => `force=${o?.force}`, 1: false } })
 	async getCategorizedItems(
-		options?: { force?: boolean; issues?: boolean; prs?: boolean },
+		options?: { force?: boolean },
 		cancellation?: CancellationToken,
-	): Promise<FocusItem[]> {
+	): Promise<FocusCategorizedResult> {
+		const scope = getLogScope();
+
 		const ignoredRepositories = new Set(
 			(configuration.get('launchpad.ignoredRepositories') ?? []).map(r => r.toLowerCase()),
 		);
@@ -484,40 +613,61 @@ export class FocusProvider implements Disposable {
 
 		if (cancellation?.isCancellationRequested) throw new CancellationError();
 
-		const [enrichedItemsResult, /*issuesResult,*/ prsWithCountsResult] = await Promise.allSettled([
+		const [enrichedItemsResult, prsWithCountsResult] = await Promise.allSettled([
 			enrichedItemsPromise,
-			// options?.issues !== false
-			// 	? this.getIssues({ force: options?.force, cancellation: cancellation })
-			// 	: undefined,
-			options?.prs !== false
-				? this.getPullRequestsWithSuggestionCounts({ force: options?.force, cancellation: cancellation })
-				: undefined,
+			this.getPullRequestsWithSuggestionCounts({ force: options?.force, cancellation: cancellation }),
 		]);
 
 		if (cancellation?.isCancellationRequested) throw new CancellationError();
-		let categorized: FocusItem[] = [];
 
 		// TODO: Since this is all repos we probably should order by repos you are a contributor on (or even filter out one you aren't)
-		const prsWithSuggestionCounts = getSettledValue(prsWithCountsResult);
-		const enrichedItems = getSettledValue(enrichedItemsResult);
-		// Multiple enriched items can have the same entityId. Map by entityId to an array of enriched items.
-		const enrichedItemsByEntityId: { [id: string]: EnrichedItem[] } = {};
-		if (enrichedItems != null) {
-			for (const enrichedItem of enrichedItems) {
-				if (enrichedItem.entityId in enrichedItemsByEntityId) {
-					enrichedItemsByEntityId[enrichedItem.entityId].push(enrichedItem);
-				} else {
-					enrichedItemsByEntityId[enrichedItem.entityId] = [enrichedItem];
+
+		let result: FocusCategorizedResult | undefined;
+
+		try {
+			if (prsWithCountsResult.status === 'rejected') {
+				Logger.error(prsWithCountsResult.reason, scope, 'Failed to get pull requests with suggestion counts');
+				result = {
+					error:
+						prsWithCountsResult.reason instanceof Error
+							? prsWithCountsResult.reason
+							: new Error(String(prsWithCountsResult.reason)),
+				};
+				return result;
+			}
+
+			const enrichedItems = getSettledValue(enrichedItemsResult);
+			const prsWithSuggestionCounts = getSettledValue(prsWithCountsResult);
+
+			const prs = prsWithSuggestionCounts?.prs;
+			if (prs?.value == null) {
+				result = {
+					items: [],
+					timings: {
+						prs: prsWithSuggestionCounts?.prs?.duration,
+						codeSuggestionCounts: prsWithSuggestionCounts?.suggestionCounts?.duration,
+						enrichedItems: enrichedItems?.duration,
+					},
+				};
+				return result;
+			}
+
+			// Multiple enriched items can have the same entityId. Map by entityId to an array of enriched items.
+			const enrichedItemsByEntityId: { [id: string]: EnrichedItem[] } = {};
+
+			if (enrichedItems?.value != null) {
+				for (const enrichedItem of enrichedItems.value) {
+					if (enrichedItem.entityId in enrichedItemsByEntityId) {
+						enrichedItemsByEntityId[enrichedItem.entityId].push(enrichedItem);
+					} else {
+						enrichedItemsByEntityId[enrichedItem.entityId] = [enrichedItem];
+					}
 				}
 			}
-		}
 
-		if (prsWithSuggestionCounts != null) {
-			const { prs, suggestionCounts } = prsWithSuggestionCounts;
-			if (prs == null) return categorized;
 			const filteredPrs = !ignoredRepositories.size
-				? prs
-				: prs.filter(
+				? prs.value
+				: prs.value.filter(
 						pr =>
 							!ignoredRepositories.has(
 								`${pr.pullRequest.repository.owner.toLowerCase()}/${pr.pullRequest.repository.repo.toLowerCase()}`,
@@ -526,14 +676,17 @@ export class FocusProvider implements Disposable {
 
 			const github = await this.container.integrations.get(HostingIntegrationId.GitHub);
 			const myAccount = await github.getCurrentAccount();
+
 			const inputPrs: EnrichablePullRequest[] = filteredPrs.map(pr => {
 				const providerPr = toProviderPullRequestWithUniqueId(pr.pullRequest);
+
 				const enrichable = {
 					type: 'pr',
 					id: providerPr.uuid,
 					url: pr.pullRequest.url,
 					provider: 'github',
 				} satisfies EnrichableItem;
+
 				const repoIdentity = {
 					remote: {
 						url: pr.pullRequest.refs?.head?.url,
@@ -566,10 +719,17 @@ export class FocusProvider implements Disposable {
 				{ id: myAccount!.username! },
 				{ enrichedItemsByUniqueId: enrichedItemsByEntityId },
 			) as FocusPullRequest[];
+
+			// Get the unique remote urls
+			const mappedRemotesPromise = await this.getMatchingRemoteMap(actionableItems);
+
+			const { suggestionCounts } = prsWithSuggestionCounts!;
+
 			// Map from shared category label to local actionable category, and get suggested actions
-			categorized = (await Promise.all(
+			const categorized = (await Promise.all(
 				actionableItems.map(async item => {
-					const codeSuggestionsCount = suggestionCounts?.[item.uuid]?.count ?? 0;
+					const codeSuggestionsCount = suggestionCounts?.value?.[item.uuid]?.count ?? 0;
+
 					let actionableCategory = sharedCategoryToFocusActionCategoryMap.get(item.suggestedActionCategory)!;
 					// category overrides
 					if (staleDate != null && item.updatedDate.getTime() < staleDate.getTime()) {
@@ -577,7 +737,8 @@ export class FocusProvider implements Disposable {
 					} else if (codeSuggestionsCount > 0 && item.viewer.isAuthor) {
 						actionableCategory = 'code-suggestions';
 					}
-					const openRepository = await this.getMatchingOpenRepository(item);
+
+					const openRepository = await this.getMatchingOpenRepository(item, mappedRemotesPromise);
 					const suggestedActions = getSuggestedActions(
 						actionableCategory,
 						openRepository?.localBranch?.current ?? false,
@@ -587,20 +748,40 @@ export class FocusProvider implements Disposable {
 						...item,
 						currentViewer: myAccount!,
 						codeSuggestionsCount: codeSuggestionsCount,
-						isNew:
-							this._groupedIds != null &&
-							!this._groupedIds.has(`${item.uuid}:${focusCategoryToGroupMap.get(actionableCategory)}`),
+						isNew: this.isItemNewInGroup(item, actionableCategory),
 						actionableCategory: actionableCategory,
 						suggestedActions: suggestedActions,
 						openRepository: openRepository,
 					};
 				}),
 			)) satisfies FocusItem[];
-		}
 
-		this.updateGroupedIds(categorized);
-		this._onDidRefresh.fire({ items: categorized });
-		return categorized;
+			result = {
+				items: categorized,
+				timings: {
+					prs: prsWithSuggestionCounts?.prs?.duration,
+					codeSuggestionCounts: prsWithSuggestionCounts?.suggestionCounts?.duration,
+					enrichedItems: enrichedItems?.duration,
+				},
+			};
+			return result;
+		} finally {
+			this.updateGroupedIds(result?.items ?? []);
+			if (result != null) {
+				this._onDidRefresh.fire(result);
+			} else {
+				debugger;
+			}
+		}
+	}
+
+	private _groupedIds: Set<string> | undefined;
+
+	private isItemNewInGroup(item: FocusPullRequest, actionableCategory: FocusActionCategory) {
+		return (
+			this._groupedIds != null &&
+			!this._groupedIds.has(`${item.uuid}:${focusCategoryToGroupMap.get(actionableCategory)}`)
+		);
 	}
 
 	private updateGroupedIds(items: FocusItem[]) {
@@ -627,7 +808,13 @@ export class FocusProvider implements Disposable {
 		return false;
 	}
 
-	async ensureFocusItemCodeSuggestions(item: FocusItem, options?: { force?: boolean }): Promise<Draft[] | undefined> {
+	@log<FocusProvider['ensureFocusItemCodeSuggestions']>({
+		args: { 0: i => `${i.id} (${i.provider.name} ${i.type})`, 1: o => `force=${o?.force}` },
+	})
+	async ensureFocusItemCodeSuggestions(
+		item: FocusItem,
+		options?: { force?: boolean },
+	): Promise<TimedResult<Draft[]> | undefined> {
 		item.codeSuggestions ??= await this.getCodeSuggestions(item, options);
 		return item.codeSuggestions;
 	}
@@ -643,25 +830,24 @@ export class FocusProvider implements Disposable {
 
 	private onConfigurationChanged(e: ConfigurationChangeEvent) {
 		if (!configuration.changed(e, 'launchpad')) return;
-		const launchpadConfig = configuration.get('launchpad');
+
+		const cfg = configuration.get('launchpad');
 		this.container.telemetry.sendEvent('launchpad/configurationChanged', {
-			staleThreshold: launchpadConfig.staleThreshold,
-			ignoredRepositories: launchpadConfig.ignoredRepositories,
-			indicatorEnabled: launchpadConfig.indicator.enabled,
-			indicatorOpenInEditor: launchpadConfig.indicator.openInEditor,
-			indicatorIcon: launchpadConfig.indicator.icon,
-			indicatorLabel: launchpadConfig.indicator.label,
-			indicatorUseColors: launchpadConfig.indicator.useColors,
-			indicatorGroups: launchpadConfig.indicator.groups,
-			indicatorPollingEnabled: launchpadConfig.indicator.polling.enabled,
-			indicatorPollingInterval: launchpadConfig.indicator.polling.interval,
+			'config.launchpad.staleThreshold': cfg.staleThreshold,
+			'config.launchpad.ignoredOrganizations': cfg.ignoredOrganizations?.length ?? 0,
+			'config.launchpad.ignoredRepositories': cfg.ignoredRepositories?.length ?? 0,
+			'config.launchpad.indicator.enabled': cfg.indicator.enabled,
+			'config.launchpad.indicator.openInEditor': cfg.indicator.openInEditor,
+			'config.launchpad.indicator.icon': cfg.indicator.icon,
+			'config.launchpad.indicator.label': cfg.indicator.label,
+			'config.launchpad.indicator.useColors': cfg.indicator.useColors,
+			'config.launchpad.indicator.groups': cfg.indicator.groups.join(','),
+			'config.launchpad.indicator.polling.enabled': cfg.indicator.polling.enabled,
+			'config.launchpad.indicator.polling.interval': cfg.indicator.polling.interval,
 		});
 
-		if (configuration.changed(e, 'launchpad.indicator.enabled') && !launchpadConfig.indicator.enabled) {
-			this.container.telemetry.sendEvent('launchpad/indicator/hidden');
-		}
-
 		if (
+			configuration.changed(e, 'launchpad.ignoredOrganizations') ||
 			configuration.changed(e, 'launchpad.ignoredRepositories') ||
 			configuration.changed(e, 'launchpad.staleThreshold')
 		) {
@@ -698,6 +884,9 @@ export function groupAndSortFocusItems(items?: FocusItem[]) {
 		}
 	}
 
+	// Re-sort pinned and draft groups by updated date
+	grouped.get('pinned')!.sort((a, b) => b.updatedDate.getTime() - a.updatedDate.getTime());
+	grouped.get('draft')!.sort((a, b) => b.updatedDate.getTime() - a.updatedDate.getTime());
 	return grouped;
 }
 
@@ -750,4 +939,23 @@ function ensureRemoteUrl(url: string) {
 
 export function getFocusItemIdHash(item: FocusItem) {
 	return md5(item.uuid);
+}
+
+const slowEventTimeout = 1000 * 30; // 30 seconds
+
+function withDurationAndSlowEventOnTimeout<T>(
+	promise: Promise<T>,
+	name: 'getMyPullRequests' | 'getCodeSuggestionCounts' | 'getCodeSuggestions' | 'getEnrichedItems',
+	container: Container,
+): Promise<TimedResult<T>> {
+	return timedWithSlowThreshold(promise, {
+		timeout: slowEventTimeout,
+		onSlow: (duration: number) => {
+			container.telemetry.sendEvent('launchpad/operation/slow', {
+				timeout: slowEventTimeout,
+				operation: name,
+				duration: duration,
+			});
+		},
+	});
 }

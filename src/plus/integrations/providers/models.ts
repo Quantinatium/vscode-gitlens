@@ -2,6 +2,8 @@ import type {
 	Account,
 	ActionablePullRequest,
 	AzureDevOps,
+	AzureOrganization,
+	AzureProject,
 	Bitbucket,
 	EnterpriseOptions,
 	GetRepoInput,
@@ -53,6 +55,8 @@ export type ProviderIssue = Issue;
 export type ProviderEnterpriseOptions = EnterpriseOptions;
 export type ProviderJiraProject = JiraProject;
 export type ProviderJiraResource = JiraResource;
+export type ProviderAzureProject = AzureProject;
+export type ProviderAzureResource = AzureOrganization;
 export const ProviderPullRequestReviewState = GitPullRequestReviewState;
 export const ProviderBuildStatusState = GitBuildStatusState;
 
@@ -78,6 +82,16 @@ export enum SelfHostedIntegrationId {
 const selfHostedIntegrationIds: SelfHostedIntegrationId[] = [
 	SelfHostedIntegrationId.GitHubEnterprise,
 	SelfHostedIntegrationId.GitLabSelfHosted,
+] as const;
+
+export const supportedIntegrationIds: IntegrationId[] = [
+	HostingIntegrationId.GitHub,
+	HostingIntegrationId.GitLab,
+	HostingIntegrationId.Bitbucket,
+	HostingIntegrationId.AzureDevOps,
+	IssueIntegrationId.Jira,
+	IssueIntegrationId.Trello,
+	...selfHostedIntegrationIds,
 ] as const;
 
 export function isSelfHostedIntegrationId(id: IntegrationId): id is SelfHostedIntegrationId {
@@ -126,6 +140,20 @@ export interface GetPullRequestsOptions {
 	mentionLogin?: string;
 	cursor?: string; // stringified JSON object of type { type: 'cursor' | 'page'; value: string | number } | {}
 	baseUrl?: string;
+}
+
+export interface GetPullRequestsForUserOptions {
+	includeFromArchivedRepos?: boolean;
+	cursor?: string; // stringified JSON object of type { type: 'cursor' | 'page'; value: string | number } | {}
+	baseUrl?: string;
+}
+
+export interface GetPullRequestsForUserInput extends GetPullRequestsForUserOptions {
+	userId: string;
+}
+
+export interface GetPullRequestsAssociatedWithUserInput extends GetPullRequestsForUserOptions {
+	username: string;
 }
 
 export interface GetPullRequestsForRepoInput extends GetPullRequestsOptions {
@@ -195,6 +223,16 @@ export type GetPullRequestsForRepoFn = (
 	options?: EnterpriseOptions,
 ) => Promise<{ data: ProviderPullRequest[]; pageInfo?: PageInfo }>;
 
+export type GetPullRequestsForUserFn = (
+	input: GetPullRequestsForUserInput | GetPullRequestsAssociatedWithUserInput,
+	options?: EnterpriseOptions,
+) => Promise<{ data: ProviderPullRequest[]; pageInfo?: PageInfo }>;
+
+export type GetPullRequestsForAzureProjectsFn = (
+	input: { projects: { namespace: string; project: string }[]; authorLogin?: string; assigneeLogins?: string[] },
+	options?: EnterpriseOptions,
+) => Promise<{ data: ProviderPullRequest[] }>;
+
 export type GetIssueFn = (
 	input: { resourceId: string; number: string },
 	options?: EnterpriseOptions,
@@ -220,7 +258,10 @@ export type GetReposForAzureProjectFn = (
 	options?: EnterpriseOptions,
 ) => Promise<{ data: ProviderRepository[]; pageInfo?: PageInfo }>;
 
-export type GetCurrentUserFn = (options?: EnterpriseOptions) => Promise<{ data: ProviderAccount }>;
+export type GetCurrentUserFn = (
+	input: Record<string, never>,
+	options?: EnterpriseOptions,
+) => Promise<{ data: ProviderAccount }>;
 export type GetCurrentUserForInstanceFn = (
 	input: { namespace: string },
 	options?: EnterpriseOptions,
@@ -235,6 +276,14 @@ export type GetJiraProjectsForResourcesFn = (
 	input: { resourceIds: string[] },
 	options?: EnterpriseOptions,
 ) => Promise<{ data: JiraProject[] }>;
+export type GetAzureResourcesForUserFn = (
+	input: { userId: string },
+	options?: EnterpriseOptions,
+) => Promise<{ data: AzureOrganization[] }>;
+export type GetAzureProjectsForResourceFn = (
+	input: { namespace: string; cursor?: string },
+	options?: EnterpriseOptions,
+) => Promise<{ data: AzureProject[]; pageInfo?: PageInfo }>;
 export type GetIssuesForProjectFn = (
 	input: GetIssuesForProjectInput,
 	options?: EnterpriseOptions,
@@ -248,6 +297,8 @@ export interface ProviderInfo extends ProviderMetadata {
 	provider: GitHub | GitLab | Bitbucket | Jira | Trello | AzureDevOps;
 	getPullRequestsForReposFn?: GetPullRequestsForReposFn;
 	getPullRequestsForRepoFn?: GetPullRequestsForRepoFn;
+	getPullRequestsForUserFn?: GetPullRequestsForUserFn;
+	getPullRequestsForAzureProjectsFn?: GetPullRequestsForAzureProjectsFn;
 	getIssueFn?: GetIssueFn;
 	getIssuesForReposFn?: GetIssuesForReposFn;
 	getIssuesForRepoFn?: GetIssuesForRepoFn;
@@ -256,7 +307,9 @@ export interface ProviderInfo extends ProviderMetadata {
 	getCurrentUserForInstanceFn?: GetCurrentUserForInstanceFn;
 	getCurrentUserForResourceFn?: GetCurrentUserForResourceFn;
 	getJiraResourcesForCurrentUserFn?: GetJiraResourcesForCurrentUserFn;
+	getAzureResourcesForUserFn?: GetAzureResourcesForUserFn;
 	getJiraProjectsForResourcesFn?: GetJiraProjectsForResourcesFn;
+	getAzureProjectsForResourceFn?: GetAzureProjectsForResourceFn;
 	getIssuesForProjectFn?: GetIssuesForProjectFn;
 	getReposForAzureProjectFn?: GetReposForAzureProjectFn;
 	getIssuesForResourceForCurrentUserFn?: GetIssuesForResourceForCurrentUserFn;
@@ -270,7 +323,6 @@ export interface ProviderMetadata {
 	scopes: string[];
 	supportedPullRequestFilters?: PullRequestFilter[];
 	supportedIssueFilters?: IssueFilter[];
-	usesPAT?: boolean;
 }
 
 export type Providers = Record<IntegrationId, ProviderInfo>;
@@ -292,7 +344,6 @@ export const providersMetadata: ProvidersMetadata = {
 		// Use 'username' property on account for issue filters
 		supportedIssueFilters: [IssueFilter.Author, IssueFilter.Assignee, IssueFilter.Mention],
 		scopes: ['repo', 'read:user', 'user:email'],
-		usesPAT: true,
 	},
 	[SelfHostedIntegrationId.GitHubEnterprise]: {
 		domain: '',
@@ -309,7 +360,6 @@ export const providersMetadata: ProvidersMetadata = {
 		// Use 'username' property on account for issue filters
 		supportedIssueFilters: [IssueFilter.Author, IssueFilter.Assignee, IssueFilter.Mention],
 		scopes: ['repo', 'read:user', 'user:email'],
-		usesPAT: true,
 	},
 	[HostingIntegrationId.GitLab]: {
 		domain: 'gitlab.com',
@@ -325,7 +375,6 @@ export const providersMetadata: ProvidersMetadata = {
 		// Use 'username' property on account for issue filters
 		supportedIssueFilters: [IssueFilter.Author, IssueFilter.Assignee],
 		scopes: ['read_api', 'read_user', 'read_repository'],
-		usesPAT: true,
 	},
 	[SelfHostedIntegrationId.GitLabSelfHosted]: {
 		domain: '',
@@ -341,7 +390,6 @@ export const providersMetadata: ProvidersMetadata = {
 		// Use 'username' property on account for issue filters
 		supportedIssueFilters: [IssueFilter.Author, IssueFilter.Assignee],
 		scopes: ['read_api', 'read_user', 'read_repository'],
-		usesPAT: true,
 	},
 	[HostingIntegrationId.Bitbucket]: {
 		domain: 'bitbucket.org',
@@ -350,7 +398,6 @@ export const providersMetadata: ProvidersMetadata = {
 		// Use 'id' property on account for PR filters
 		supportedPullRequestFilters: [PullRequestFilter.Author],
 		scopes: ['account:read', 'repository:read', 'pullrequest:read', 'issue:read'],
-		usesPAT: true,
 	},
 	[HostingIntegrationId.AzureDevOps]: {
 		domain: 'dev.azure.com',
@@ -362,7 +409,6 @@ export const providersMetadata: ProvidersMetadata = {
 		// Use 'name' property on account for issue filters
 		supportedIssueFilters: [IssueFilter.Author, IssueFilter.Assignee, IssueFilter.Mention],
 		scopes: ['vso.code', 'vso.identity', 'vso.project', 'vso.profile', 'vso.work'],
-		usesPAT: true,
 	},
 	[IssueIntegrationId.Jira]: {
 		domain: 'atlassian.net',
