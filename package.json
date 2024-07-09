@@ -3598,6 +3598,7 @@
 							"openai:gpt-3.5-turbo",
 							"openai:gpt-3.5-turbo-16k",
 							"anthropic:claude-3-opus-20240229",
+							"anthropic:claude-3-5-sonnet-20240620",
 							"anthropic:claude-3-sonnet-20240229",
 							"anthropic:claude-3-haiku-20240307",
 							"anthropic:claude-2.1",
@@ -3617,6 +3618,7 @@
 							"OpenAI GPT-3.5 Turbo",
 							"OpenAI GPT-3.5 Turbo 16k",
 							"Anthropic Claude 3 Opus",
+							"Anthropic Claude 3.5 Sonnet",
 							"Anthropic Claude 3 Sonnet",
 							"Anthropic Claude 3 Haiku",
 							"Anthropic Claude 2.1",
@@ -5351,6 +5353,26 @@
 					"highContrastLight": "#3095e8",
 					"dark": "#3087cf",
 					"highContrast": "#3087cf"
+				}
+			},
+			{
+				"id": "gitlens.graphMinimapMarkerPullRequestsColor",
+				"description": "Specifies the color marking pull requests on the minimap of the _Commit Graph_",
+				"defaults": {
+					"light": "#ff8f18",
+					"highContrastLight": "#ff8f18",
+					"dark": "#c76801",
+					"highContrast": "#c76801"
+				}
+			},
+			{
+				"id": "gitlens.graphScrollMarkerPullRequestsColor",
+				"description": "Specifies the color marking pull requests on the scrollbar of the _Commit Graph_",
+				"defaults": {
+					"light": "#ff8f18",
+					"highContrastLight": "#ff8f18",
+					"dark": "#c76801",
+					"highContrast": "#c76801"
 				}
 			},
 			{
@@ -9146,6 +9168,16 @@
 				"category": "GitLens"
 			},
 			{
+				"command": "gitlens.graph.scrollMarkerPullRequestOn",
+				"title": "Show Pull Request Markers",
+				"category": "GitLens"
+			},
+			{
+				"command": "gitlens.graph.scrollMarkerPullRequestOff",
+				"title": "Hide Pull Request Markers",
+				"category": "GitLens"
+			},
+			{
 				"command": "gitlens.graph.shareAsCloudPatch",
 				"title": "Share as Cloud Patch...",
 				"category": "GitLens"
@@ -12070,6 +12102,14 @@
 				},
 				{
 					"command": "gitlens.graph.scrollMarkerTagOff",
+					"when": "false"
+				},
+				{
+					"command": "gitlens.graph.scrollMarkerPullRequestOn",
+					"when": "false"
+				},
+				{
+					"command": "gitlens.graph.scrollMarkerPullRequestOff",
 					"when": "false"
 				},
 				{
@@ -16307,6 +16347,16 @@
 					"command": "gitlens.graph.scrollMarkerTagOff",
 					"when": "webviewItem =~ /gitlens:graph:settings\\b/ && webviewItemValue =~ /\\bscrollMarker:tags:enabled\\b/",
 					"group": "4_settings@4"
+				},
+				{
+					"command": "gitlens.graph.scrollMarkerPullRequestOn",
+					"when": "webviewItem =~ /gitlens:graph:settings\\b/ && webviewItemValue =~ /\\bscrollMarker:pullRequests:disabled\\b/",
+					"group": "4_settings@5"
+				},
+				{
+					"command": "gitlens.graph.scrollMarkerPullRequestOff",
+					"when": "webviewItem =~ /gitlens:graph:settings\\b/ && webviewItemValue =~ /\\bscrollMarker:pullRequests:enabled\\b/",
+					"group": "4_settings@5"
 				}
 			],
 			"gitlens/scm/resourceGroup/changes": [
@@ -17511,7 +17561,7 @@
 		"vscode:prepublish": "yarn run bundle"
 	},
 	"dependencies": {
-		"@gitkraken/gitkraken-components": "10.4.0",
+		"@gitkraken/gitkraken-components": "10.5.1",
 		"@gitkraken/provider-apis": "0.22.9",
 		"@gitkraken/shared-web-components": "0.1.1-rc.15",
 		"@lit/react": "1.0.5",
@@ -17541,19 +17591,19 @@
 	},
 	"devDependencies": {
 		"@eamodio/eslint-lite-webpack-plugin": "0.0.8",
-		"@swc/core": "1.5.29",
+		"@swc/core": "1.6.7",
 		"@twbs/fantasticon": "3.0.0",
-		"@types/mocha": "10.0.6",
+		"@types/mocha": "10.0.7",
 		"@types/node": "18.15.0",
 		"@types/react": "17.0.80",
 		"@types/react-dom": "17.0.21",
 		"@types/sortablejs": "1.15.8",
 		"@types/vscode": "1.82.0",
-		"@typescript-eslint/eslint-plugin": "7.13.0",
-		"@typescript-eslint/parser": "7.13.0",
+		"@typescript-eslint/eslint-plugin": "7.15.0",
+		"@typescript-eslint/parser": "7.15.0",
 		"@vscode/test-electron": "2.4.0",
-		"@vscode/test-web": "0.0.54",
-		"@vscode/vsce": "2.27.0",
+		"@vscode/test-web": "0.0.56",
+		"@vscode/vsce": "2.29.0",
 		"circular-dependency-plugin": "5.2.2",
 		"clean-webpack-plugin": "4.0.0",
 		"concurrently": "8.2.2",
@@ -17561,9 +17611,9 @@
 		"csp-html-webpack-plugin": "5.1.0",
 		"css-loader": "7.1.2",
 		"css-minimizer-webpack-plugin": "7.0.0",
-		"cssnano-preset-advanced": "7.0.2",
-		"esbuild": "0.21.5",
-		"esbuild-loader": "4.1.0",
+		"cssnano-preset-advanced": "7.0.4",
+		"esbuild": "0.23.0",
+		"esbuild-loader": "4.2.0",
 		"esbuild-sass-plugin": "3.3.1",
 		"eslint": "8.57.0",
 		"eslint-cli": "1.1.1",
@@ -17573,16 +17623,16 @@
 		"eslint-plugin-lit": "1.14.0",
 		"eslint-plugin-wc": "2.1.0",
 		"fork-ts-checker-webpack-plugin": "6.5.3",
-		"glob": "10.4.1",
+		"glob": "10.4.2",
 		"html-loader": "5.0.0",
 		"html-webpack-plugin": "5.6.0",
 		"image-minimizer-webpack-plugin": "4.0.2",
 		"license-checker-rseidelsohn": "4.3.0",
 		"lz-string": "1.5.0",
 		"mini-css-extract-plugin": "2.9.0",
-		"mocha": "10.4.0",
+		"mocha": "10.6.0",
 		"prettier": "3.1.0",
-		"sass": "1.77.5",
+		"sass": "1.77.6",
 		"sass-loader": "14.2.1",
 		"schema-utils": "4.2.0",
 		"sharp": "0.32.6",
@@ -17590,15 +17640,15 @@
 		"terser-webpack-plugin": "5.3.10",
 		"ts-loader": "9.5.1",
 		"tsc-alias": "1.8.10",
-		"typescript": "5.5.1-rc",
-		"webpack": "5.92.0",
+		"typescript": "5.5.3",
+		"webpack": "5.92.1",
 		"webpack-bundle-analyzer": "4.10.2",
 		"webpack-cli": "5.1.4",
 		"webpack-node-externals": "3.0.0",
 		"webpack-require-from": "1.8.6"
 	},
 	"resolutions": {
-		"esbuild": "0.21.5",
+		"esbuild": "0.23.0",
 		"iconv-lite": "0.6.3",
 		"node-fetch": "2.7.0",
 		"semver-regex": "4.0.5"

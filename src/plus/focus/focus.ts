@@ -21,6 +21,7 @@ import {
 	MergeQuickInputButton,
 	OpenOnGitHubQuickInputButton,
 	OpenOnWebQuickInputButton,
+	OpenWorktreeInNewWindowQuickInputButton,
 	PinQuickInputButton,
 	RefreshQuickInputButton,
 	SnoozeQuickInputButton,
@@ -38,6 +39,7 @@ import { getScopedCounter } from '../../system/counter';
 import { fromNow } from '../../system/date';
 import { interpolate, pluralize } from '../../system/string';
 import { openUrl } from '../../system/utils';
+import { isSupportedCloudIntegrationId } from '../integrations/authentication/models';
 import type { IntegrationId } from '../integrations/providers/models';
 import {
 	HostingIntegrationId,
@@ -159,6 +161,18 @@ export class FocusCommand extends QuickCommand<State> {
 		const integration = await this.container.integrations.get(id);
 		let connected = integration.maybeConnected ?? (await integration.isConnected());
 		if (!connected) {
+			if (isSupportedCloudIntegrationId(integration.id)) {
+				await this.container.integrations.manageCloudIntegrations(
+					{ integrationId: integration.id },
+					{
+						source: 'launchpad',
+						detail: {
+							action: 'connect',
+							integration: integration.id,
+						},
+					},
+				);
+			}
 			connected = await integration.connect();
 		}
 
@@ -283,9 +297,12 @@ export class FocusCommand extends QuickCommand<State> {
 					case 'show-overview':
 						void this.container.focus.switchTo(state.item);
 						break;
+					case 'open-worktree':
+						void this.container.focus.switchTo(state.item, { skipWorktreeConfirmations: true });
+						break;
 					case 'switch-and-code-suggest':
 					case 'code-suggest':
-						void this.container.focus.switchTo(state.item, true);
+						void this.container.focus.switchTo(state.item, { startCodeSuggestion: true });
 						break;
 					case 'open-changes':
 						void this.container.focus.openChanges(state.item);
@@ -377,11 +394,16 @@ export class FocusCommand extends QuickCommand<State> {
 							buttons.push(
 								i.viewer.pinned ? UnpinQuickInputButton : PinQuickInputButton,
 								i.viewer.snoozed ? UnsnoozeQuickInputButton : SnoozeQuickInputButton,
-								OpenOnGitHubQuickInputButton,
 							);
 
+							if (!i.openRepository?.localBranch?.current) {
+								buttons.push(OpenWorktreeInNewWindowQuickInputButton);
+							}
+
+							buttons.push(OpenOnGitHubQuickInputButton);
+
 							return {
-								label: i.title,
+								label: i.title.length > 60 ? `${i.title.substring(0, 60)}...` : i.title,
 								// description: `${i.repoAndOwner}#${i.id}, by @${i.author}`,
 								description: `\u00a0 ${i.repository.owner.login}/${i.repository.name}#${i.id} \u00a0 ${
 									i.codeSuggestionsCount > 0
@@ -511,6 +533,11 @@ export class FocusCommand extends QuickCommand<State> {
 						this.sendItemActionTelemetry('merge', item, group, context);
 						await this.container.focus.merge(item);
 						break;
+
+					case OpenWorktreeInNewWindowQuickInputButton:
+						this.sendItemActionTelemetry('open-worktree', item, group, context);
+						await this.container.focus.switchTo(item, { skipWorktreeConfirmations: true });
+						break;
 				}
 
 				await updateItems(quickpick);
@@ -578,6 +605,7 @@ export class FocusCommand extends QuickCommand<State> {
 							{
 								label: 'Merge...',
 								detail: `Will merge ${from}${into}`,
+								buttons: [OpenOnGitHubQuickInputButton],
 							},
 							action,
 						),
@@ -589,6 +617,7 @@ export class FocusCommand extends QuickCommand<State> {
 						createQuickPickItemOfT(
 							{
 								label: `${this.getOpenActionLabel(state.item.actionableCategory)} on GitHub`,
+								buttons: [OpenOnGitHubQuickInputButton],
 							},
 							action,
 						),
@@ -600,6 +629,17 @@ export class FocusCommand extends QuickCommand<State> {
 							{
 								label: 'Switch to Branch or Worktree',
 								detail: 'Will checkout the branch, create or open a worktree',
+							},
+							action,
+						),
+					);
+					break;
+				case 'open-worktree':
+					confirmations.push(
+						createQuickPickItemOfT(
+							{
+								label: 'Open Worktree in New Window',
+								detail: 'Will create or open a worktree in a new window',
 							},
 							action,
 						),
@@ -802,12 +842,17 @@ export class FocusCommand extends QuickCommand<State> {
 			status = `$(pass) No conflicts`;
 		}
 
-		return createQuickPickItemOfT({ label: status }, 'soft-open');
+		return createQuickPickItemOfT({ label: status, buttons: [OpenOnGitHubQuickInputButton] }, 'soft-open');
 	}
 
 	private getFocusItemReviewInformation(item: FocusItem): QuickPickItemOfT<FocusAction>[] {
 		if (item.reviews == null || item.reviews.length === 0) {
-			return [createQuickPickItemOfT({ label: `$(info) No reviewers have been assigned` }, 'soft-open')];
+			return [
+				createQuickPickItemOfT(
+					{ label: `$(info) No reviewers have been assigned`, buttons: [OpenOnGitHubQuickInputButton] },
+					'soft-open',
+				),
+			];
 		}
 
 		const reviewInfo: QuickPickItemOfT<FocusAction>[] = [];
@@ -834,7 +879,12 @@ export class FocusCommand extends QuickCommand<State> {
 			}
 
 			if (reviewLabel != null) {
-				reviewInfo.push(createQuickPickItemOfT({ label: reviewLabel, iconPath: iconPath }, 'soft-open'));
+				reviewInfo.push(
+					createQuickPickItemOfT(
+						{ label: reviewLabel, iconPath: iconPath, buttons: [OpenOnGitHubQuickInputButton] },
+						'soft-open',
+					),
+				);
 			}
 		}
 

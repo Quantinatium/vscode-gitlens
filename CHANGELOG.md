@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this p
 
 ### Added
 
+- Adds support for Anthropic's Claude 3.5 Sonnet model for GitLens' experimental AI features
 - Adds a new `counts` option to the `gitlens.launchpad.indicator.label` setting to show the status counts of items which need your attention in the _Launchpad_ status bar indicator
 - Adds _Search for Commits within Selection_ command to the editor context menu when there is a selection
 - Adds a `gitlens.launchpad.ignoredOrganizations` setting to specify an array of organizations (or users) to ignore in the _Launchpad_
@@ -15,6 +16,7 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this p
   - Adds a `gitlens.views.formats.stashes.tooltip` setting to specify the tooltip format of the stashes in GitLens views
 - Improves the display of branch and tag tips in the _File History_ and _Line History_ and in commit tooltips in GitLens views
   - Adds provider-specific icons to tips of remote branches
+- Adds pull request scroll and minimap markers to the _Commit Graph_
 
 ### Changed
 
@@ -27,6 +29,8 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/) and this p
 ### Fixed
 
 - Fixes [#3344](https://github.com/gitkraken/vscode-gitlens/issues/3344) - Make changing the AI key easier
+- Fixes [#3377](https://github.com/gitkraken/vscode-gitlens/issues/3377) - Cannot read properties of undefined (reading 'start')
+- Fixes [#3377](https://github.com/gitkraken/vscode-gitlens/issues/3378) - Deleting a worktree (without force) with working changes causes double prompts
 - Fixes fixes issue with Jira integration not refreshing
 
 ## [15.1.0] - 2024-06-05

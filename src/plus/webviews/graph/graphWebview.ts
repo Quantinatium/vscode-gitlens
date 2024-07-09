@@ -539,6 +539,12 @@ export class GraphWebviewProvider implements WebviewProvider<State, State, Graph
 			this.host.registerWebviewCommand('gitlens.graph.scrollMarkerTagOff', () =>
 				this.toggleScrollMarker('tags', false),
 			),
+			this.host.registerWebviewCommand('gitlens.graph.scrollMarkerPullRequestOn', () =>
+				this.toggleScrollMarker('pullRequests', true),
+			),
+			this.host.registerWebviewCommand('gitlens.graph.scrollMarkerPullRequestOff', () =>
+				this.toggleScrollMarker('pullRequests', false),
+			),
 
 			this.host.registerWebviewCommand('gitlens.graph.copyDeepLinkToBranch', this.copyDeepLinkToBranch),
 			this.host.registerWebviewCommand('gitlens.graph.copyDeepLinkToCommit', this.copyDeepLinkToCommit),
@@ -693,6 +699,7 @@ export class GraphWebviewProvider implements WebviewProvider<State, State, Graph
 								case 'remoteBranches':
 								case 'stashes':
 								case 'tags':
+								case 'pullRequests':
 									additionalTypes.push(marker);
 									break;
 							}
@@ -910,7 +917,7 @@ export class GraphWebviewProvider implements WebviewProvider<State, State, Graph
 	private async onHoverRowRequest<T extends typeof GetRowHoverRequest>(requestType: T, msg: IpcCallMessageType<T>) {
 		const hover: DidGetRowHoverParams = {
 			id: msg.params.id,
-			markdown: undefined,
+			cancelled: true,
 		};
 
 		if (this._hoverCancellation != null) {
@@ -958,9 +965,9 @@ export class GraphWebviewProvider implements WebviewProvider<State, State, Graph
 						});
 					}
 
-					markdown = this.getCommitTooltip(commit, cancellation.token).catch(() => {
+					markdown = this.getCommitTooltip(commit, cancellation.token).catch((ex: unknown) => {
 						this._hoverCache.delete(id);
-						return undefined;
+						throw ex;
 					});
 					if (cache) {
 						this._hoverCache.set(id, markdown);
@@ -969,7 +976,10 @@ export class GraphWebviewProvider implements WebviewProvider<State, State, Graph
 			}
 
 			if (markdown != null) {
-				hover.markdown = await markdown;
+				try {
+					hover.markdown = await markdown;
+					hover.cancelled = false;
+				} catch {}
 			}
 		}
 
@@ -1968,6 +1978,7 @@ export class GraphWebviewProvider implements WebviewProvider<State, State, Graph
 				'remoteBranches',
 				'stashes',
 				'tags',
+				'pullRequests',
 			];
 			const enabledScrollMarkerTypes = configuration.get('graph.scrollMarkers.additionalTypes');
 			for (const type of configurableScrollMarkerTypes) {
