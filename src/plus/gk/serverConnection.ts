@@ -27,48 +27,6 @@ export class ServerConnection implements Disposable {
 	dispose() {}
 
 	@memoize()
-	private get baseGkDevUri(): Uri {
-		if (this.container.env === 'staging') {
-			return Uri.parse('https://staging.gitkraken.dev');
-		}
-
-		if (this.container.env === 'dev') {
-			return Uri.parse('https://dev.gitkraken.dev');
-		}
-
-		return Uri.parse('https://gitkraken.dev');
-	}
-
-	getGkDevUri(path?: string, query?: string) {
-		let uri = path != null ? Uri.joinPath(this.baseGkDevUri, path) : this.baseGkDevUri;
-		if (query != null) {
-			uri = uri.with({ query: query });
-		}
-		return uri;
-	}
-
-	@memoize()
-	private get accountsUri(): Uri {
-		if (this.container.env === 'staging') {
-			return Uri.parse('https://stagingapp.gitkraken.com');
-		}
-
-		if (this.container.env === 'dev') {
-			return Uri.parse('https://devapp.gitkraken.com');
-		}
-
-		return Uri.parse('https://app.gitkraken.com');
-	}
-
-	getAccountsUri(path?: string, query?: string) {
-		let uri = path != null ? Uri.joinPath(this.accountsUri, path) : this.accountsUri;
-		if (query != null) {
-			uri = uri.with({ query: query });
-		}
-		return uri;
-	}
-
-	@memoize()
 	private get baseApiUri(): Uri {
 		if (this.container.env === 'staging') {
 			return Uri.parse('https://stagingapi.gitkraken.com');
@@ -100,28 +58,6 @@ export class ServerConnection implements Disposable {
 
 	getGkDevApiUrl(...pathSegments: string[]) {
 		return Uri.joinPath(this.baseGkDevApiUri, ...pathSegments).toString();
-	}
-
-	@memoize()
-	get siteUri(): Uri {
-		const { env } = this.container;
-		if (env === 'staging') {
-			return Uri.parse('https://staging.gitkraken.com');
-		}
-
-		if (env === 'dev') {
-			return Uri.parse('https://dev.gitkraken.com');
-		}
-
-		return Uri.parse('https://gitkraken.com');
-	}
-
-	getSiteUri(path?: string, query?: string) {
-		let uri = path != null ? Uri.joinPath(this.siteUri, path) : this.siteUri;
-		if (query != null) {
-			uri = uri.with({ query: query });
-		}
-		return uri;
 	}
 
 	@memoize()

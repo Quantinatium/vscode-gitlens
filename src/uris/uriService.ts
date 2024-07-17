@@ -1,7 +1,8 @@
 import type { Disposable, Event, Uri, UriHandler } from 'vscode';
 import { EventEmitter, window } from 'vscode';
 import type { Container } from '../container';
-import { AuthenticationUriPathPrefix } from '../plus/gk/account/authenticationConnection';
+import { AuthenticationUriPathPrefix, LoginUriPathPrefix } from '../plus/gk/account/authenticationConnection';
+import { SubscriptionUpdatedUriPathPrefix } from '../plus/gk/account/subscription';
 import { CloudIntegrationAuthenticationUriPathPrefix } from '../plus/integrations/authentication/models';
 import { log } from '../system/decorators/log';
 
@@ -12,14 +13,24 @@ export class UriService implements Disposable, UriHandler {
 	private _disposable: Disposable;
 
 	private _onDidReceiveAuthenticationUri: EventEmitter<Uri> = new EventEmitter<Uri>();
+	private _onDidReceiveLoginUri: EventEmitter<Uri> = new EventEmitter<Uri>();
 	private _onDidReceiveCloudIntegrationAuthenticationUri: EventEmitter<Uri> = new EventEmitter<Uri>();
+	private _onDidReceiveSubscriptionUpdatedUri: EventEmitter<Uri> = new EventEmitter<Uri>();
 
 	get onDidReceiveAuthenticationUri(): Event<Uri> {
 		return this._onDidReceiveAuthenticationUri.event;
 	}
 
+	get onDidReceiveLoginUri(): Event<Uri> {
+		return this._onDidReceiveLoginUri.event;
+	}
+
 	get onDidReceiveCloudIntegrationAuthenticationUri(): Event<Uri> {
 		return this._onDidReceiveCloudIntegrationAuthenticationUri.event;
+	}
+
+	get onDidReceiveSubscriptionUpdatedUri(): Event<Uri> {
+		return this._onDidReceiveSubscriptionUpdatedUri.event;
 	}
 
 	private _onDidReceiveUri: EventEmitter<Uri> = new EventEmitter<Uri>();
@@ -43,6 +54,12 @@ export class UriService implements Disposable, UriHandler {
 			return;
 		} else if (type === CloudIntegrationAuthenticationUriPathPrefix) {
 			this._onDidReceiveCloudIntegrationAuthenticationUri.fire(uri);
+			return;
+		} else if (type === SubscriptionUpdatedUriPathPrefix) {
+			this._onDidReceiveSubscriptionUpdatedUri.fire(uri);
+			return;
+		} else if (type === LoginUriPathPrefix) {
+			this._onDidReceiveLoginUri.fire(uri);
 			return;
 		}
 

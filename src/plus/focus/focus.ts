@@ -1,5 +1,4 @@
-import type { AttributeValue } from '@opentelemetry/api';
-import type { QuickInputButton } from 'vscode';
+import type { QuickPick } from 'vscode';
 import { commands, Uri } from 'vscode';
 import { getAvatarUri } from '../../avatars';
 import type {
@@ -20,35 +19,46 @@ import {
 	FeedbackQuickInputButton,
 	LaunchpadSettingsQuickInputButton,
 	MergeQuickInputButton,
-	OpenInEditorQuickInputButton,
 	OpenOnGitHubQuickInputButton,
 	OpenOnWebQuickInputButton,
+	OpenWorktreeInNewWindowQuickInputButton,
 	PinQuickInputButton,
 	RefreshQuickInputButton,
 	SnoozeQuickInputButton,
 	UnpinQuickInputButton,
 	UnsnoozeQuickInputButton,
 } from '../../commands/quickCommand.buttons';
-import { Commands, previewBadge } from '../../constants';
+import type { LaunchpadTelemetryContext, Source, Sources, TelemetryEvents } from '../../constants';
+import { previewBadge } from '../../constants';
 import type { Container } from '../../container';
 import type { QuickPickItemOfT } from '../../quickpicks/items/common';
 import { createQuickPickItemOfT, createQuickPickSeparator } from '../../quickpicks/items/common';
 import type { DirectiveQuickPickItem } from '../../quickpicks/items/directive';
 import { createDirectiveQuickPickItem, Directive } from '../../quickpicks/items/directive';
-import { command, executeCommand } from '../../system/command';
 import { getScopedCounter } from '../../system/counter';
 import { fromNow } from '../../system/date';
 import { interpolate, pluralize } from '../../system/string';
 import { openUrl } from '../../system/utils';
+import { isSupportedCloudIntegrationId } from '../integrations/authentication/models';
 import type { IntegrationId } from '../integrations/providers/models';
 import {
 	HostingIntegrationId,
 	ProviderBuildStatusState,
 	ProviderPullRequestReviewState,
 } from '../integrations/providers/models';
-import type { FocusAction, FocusActionCategory, FocusGroup, FocusItem, FocusTargetAction } from './focusProvider';
+import type {
+	FocusAction,
+	FocusActionCategory,
+	FocusCategorizedResult,
+	FocusGroup,
+	FocusItem,
+	FocusTargetAction,
+} from './focusProvider';
 import {
 	countFocusItemGroups,
+	focusGroupIconMap,
+	focusGroupLabelMap,
+	focusGroups,
 	getFocusItemIdHash,
 	groupAndSortFocusItems,
 	supportedFocusIntegrations,
@@ -68,29 +78,16 @@ const actionGroupMap = new Map<FocusActionCategory, string[]>([
 	['other', ['Other', `Opened by \${author} \${createdDateRelative}`]],
 ]);
 
-const groupMap = new Map<FocusGroup, [string, string | undefined]>([
-	['current-branch', ['Current Branch', 'git-branch']],
-	['pinned', ['Pinned', 'pinned']],
-	['mergeable', ['Ready to Merge', 'rocket']],
-	['blocked', ['Blocked', 'error']], //bracket-error
-	['follow-up', ['Requires Follow-up', 'report']],
-	// ['needs-attention', ['Needs Your Attention', 'bell-dot']], //comment-unresolved
-	['needs-review', ['Needs Your Review', 'comment-unresolved']], // feedback
-	['waiting-for-review', ['Waiting for Review', 'gitlens-clock']],
-	['draft', ['Draft', 'git-pull-request-draft']],
-	['other', ['Other', 'ellipsis']],
-	['snoozed', ['Snoozed', 'bell-slash']],
-]);
-
 export interface FocusItemQuickPickItem extends QuickPickItemOfT<FocusItem> {
 	group: FocusGroup;
 }
 
 interface Context {
-	items: FocusItem[];
+	result: FocusCategorizedResult;
+
 	title: string;
 	collapsed: Map<FocusGroup, boolean>;
-	telemetryContext: Record<string, AttributeValue | null | undefined> | undefined;
+	telemetryContext: LaunchpadTelemetryContext | undefined;
 }
 
 interface GroupedFocusItem extends FocusItem {
@@ -107,7 +104,7 @@ interface State {
 export interface FocusCommandArgs {
 	readonly command: 'focus';
 	confirm?: boolean;
-	source?: 'indicator' | 'home' | 'commandPalette' | 'welcome' | 'walkthrough';
+	source?: Sources;
 	state?: Partial<State>;
 }
 
@@ -122,29 +119,33 @@ function assertsFocusStepState(state: StepState<State>): asserts state is FocusS
 
 const instanceCounter = getScopedCounter();
 
-@command()
-export class FocusCommand extends QuickCommand<State> {
-	private readonly telemetryContext: Record<string, any> | undefined;
+const defaultCollapsedGroups: FocusGroup[] = ['draft', 'other', 'snoozed'];
 
-	// TODO: Hidden is a hack for now to avoid telemetry when this gets loaded in the hidden group of the git commands
-	constructor(container: Container, args?: FocusCommandArgs, hidden: boolean = false) {
+export class FocusCommand extends QuickCommand<State> {
+	private readonly source: Source;
+	private readonly telemetryContext: LaunchpadTelemetryContext | undefined;
+
+	constructor(container: Container, args?: FocusCommandArgs) {
 		super(container, 'focus', 'focus', `GitLens Launchpad\u00a0\u00a0${previewBadge}`, {
 			description: 'focus on a pull request or issue',
 		});
 
-		if (args?.source === 'indicator' && container.storage.get('launchpad:indicator:hasInteracted') == null) {
+		if (
+			args?.source === 'launchpad-indicator' &&
+			container.storage.get('launchpad:indicator:hasInteracted') == null
+		) {
 			void container.storage.store('launchpad:indicator:hasInteracted', new Date().toISOString());
 		}
 
-		if (this.container.telemetry.enabled && !hidden) {
+		this.source = { source: args?.source ?? 'commandPalette' };
+		if (this.container.telemetry.enabled) {
 			this.telemetryContext = {
 				instance: instanceCounter.next(),
-				source: args?.source ?? 'commandPalette',
-				'initialState.group': args?.state?.initialGroup ?? null,
+				'initialState.group': args?.state?.initialGroup,
 				'initialState.selectTopItem': args?.state?.selectTopItem ?? false,
 			};
 
-			this.container.telemetry.sendEvent('launchpad/open', { ...this.telemetryContext });
+			this.container.telemetry.sendEvent('launchpad/open', { ...this.telemetryContext }, this.source);
 		}
 
 		const counter = 0;
@@ -160,6 +161,18 @@ export class FocusCommand extends QuickCommand<State> {
 		const integration = await this.container.integrations.get(id);
 		let connected = integration.maybeConnected ?? (await integration.isConnected());
 		if (!connected) {
+			if (isSupportedCloudIntegrationId(integration.id)) {
+				await this.container.integrations.manageCloudIntegrations(
+					{ integrationId: integration.id },
+					{
+						source: 'launchpad',
+						detail: {
+							action: 'connect',
+							integration: integration.id,
+						},
+					},
+				);
+			}
 			connected = await integration.connect();
 		}
 
@@ -171,20 +184,23 @@ export class FocusCommand extends QuickCommand<State> {
 			await this.container.git.isDiscoveringRepositories;
 		}
 
-		const collapsed = new Map<FocusGroup, boolean>([
-			['draft', true],
-			['other', true],
-			['snoozed', true],
-		]);
+		let storedCollapsed = this.container.storage.get('launchpad:groups:collapsed') satisfies
+			| FocusGroup[]
+			| undefined;
+		if (storedCollapsed == null) {
+			storedCollapsed = defaultCollapsedGroups;
+		}
+
+		const collapsed = new Map<FocusGroup, boolean>(storedCollapsed.map(g => [g, true]));
 		if (state.initialGroup != null) {
 			// set all to true except the initial group
-			for (const [group] of groupMap) {
+			for (const group of focusGroups) {
 				collapsed.set(group, group !== state.initialGroup);
 			}
 		}
 
 		const context: Context = {
-			items: [],
+			result: { items: [] },
 			title: this.title,
 			collapsed: collapsed,
 			telemetryContext: this.telemetryContext,
@@ -197,10 +213,14 @@ export class FocusCommand extends QuickCommand<State> {
 
 			if (state.counter < 1 && !(await this.container.focus.hasConnectedIntegration())) {
 				if (this.container.telemetry.enabled) {
-					this.container.telemetry.sendEvent(opened ? 'launchpad/steps/connect' : 'launchpad/opened', {
-						...context.telemetryContext,
-						connected: false,
-					});
+					this.container.telemetry.sendEvent(
+						opened ? 'launchpad/steps/connect' : 'launchpad/opened',
+						{
+							...context.telemetryContext!,
+							connected: false,
+						},
+						this.source,
+					);
 				}
 
 				opened = true;
@@ -224,15 +244,19 @@ export class FocusCommand extends QuickCommand<State> {
 
 			if (state.counter < 2 || state.item == null) {
 				if (this.container.telemetry.enabled) {
-					this.container.telemetry.sendEvent(opened ? 'launchpad/steps/main' : 'launchpad/opened', {
-						...context.telemetryContext,
-						connected: true,
-					});
+					this.container.telemetry.sendEvent(
+						opened ? 'launchpad/steps/main' : 'launchpad/opened',
+						{
+							...context.telemetryContext!,
+							connected: true,
+						},
+						this.source,
+					);
 				}
 
 				opened = true;
 
-				const result = yield* this.pickFocusItemStep(state, context, this.container, {
+				const result = yield* this.pickFocusItemStep(state, context, {
 					picked: state.item?.id,
 					selectTopItem: state.selectTopItem,
 				});
@@ -244,8 +268,8 @@ export class FocusCommand extends QuickCommand<State> {
 			assertsFocusStepState(state);
 
 			if (this.confirm(state.confirm)) {
-				await this.container.focus.ensureFocusItemCodeSuggestions(state.item);
 				this.sendItemActionTelemetry('select', state.item, state.item.group, context);
+				await this.container.focus.ensureFocusItemCodeSuggestions(state.item);
 
 				const result = yield* this.confirmStep(state, context);
 				if (result === StepResultBreak) continue;
@@ -259,10 +283,9 @@ export class FocusCommand extends QuickCommand<State> {
 
 			if (typeof state.action === 'string') {
 				switch (state.action) {
-					case 'merge': {
+					case 'merge':
 						void this.container.focus.merge(state.item);
 						break;
-					}
 					case 'open':
 						this.container.focus.open(state.item);
 						break;
@@ -274,9 +297,12 @@ export class FocusCommand extends QuickCommand<State> {
 					case 'show-overview':
 						void this.container.focus.switchTo(state.item);
 						break;
+					case 'open-worktree':
+						void this.container.focus.switchTo(state.item, { skipWorktreeConfirmations: true });
+						break;
 					case 'switch-and-code-suggest':
 					case 'code-suggest':
-						void this.container.focus.switchTo(state.item, true);
+						void this.container.focus.switchTo(state.item, { startCodeSuggestion: true });
 						break;
 					case 'open-changes':
 						void this.container.focus.openChanges(state.item);
@@ -303,14 +329,13 @@ export class FocusCommand extends QuickCommand<State> {
 	private *pickFocusItemStep(
 		state: StepState<State>,
 		context: Context,
-		container: Container,
 		{ picked, selectTopItem }: { picked?: string; selectTopItem?: boolean },
 	): StepResultGenerator<GroupedFocusItem> {
-		function getItems(categorizedItems: FocusItem[]) {
+		const getItems = (result: FocusCategorizedResult) => {
 			const items: (FocusItemQuickPickItem | DirectiveQuickPickItem)[] = [];
 
-			if (categorizedItems?.length) {
-				const uiGroups = groupAndSortFocusItems(categorizedItems);
+			if (result.items?.length) {
+				const uiGroups = groupAndSortFocusItems(result.items);
 				const topItem: FocusItem | undefined =
 					!selectTopItem || picked != null
 						? undefined
@@ -324,21 +349,33 @@ export class FocusCommand extends QuickCommand<State> {
 					items.push(
 						createQuickPickSeparator(groupItems.length ? groupItems.length.toString() : undefined),
 						createDirectiveQuickPickItem(Directive.Reload, false, {
-							label: `$(${context.collapsed.get(ui) ? 'chevron-down' : 'chevron-up'})\u00a0\u00a0$(${
-								groupMap.get(ui)![1]
-							})\u00a0\u00a0${groupMap.get(ui)![0]?.toUpperCase()}`, //'\u00a0',
+							label: `$(${
+								context.collapsed.get(ui) ? 'chevron-down' : 'chevron-up'
+							})\u00a0\u00a0${focusGroupIconMap.get(ui)!}\u00a0\u00a0${focusGroupLabelMap
+								.get(ui)
+								?.toUpperCase()}`, //'\u00a0',
 							//detail: groupMap.get(group)?.[0].toUpperCase(),
 							onDidSelect: () => {
 								const collapsed = !context.collapsed.get(ui);
 								context.collapsed.set(ui, collapsed);
+								if (state.initialGroup == null) {
+									void this.container.storage.store(
+										'launchpad:groups:collapsed',
+										Array.from(context.collapsed.keys()).filter(g => context.collapsed.get(g)),
+									);
+								}
 
-								if (container.telemetry.enabled) {
+								if (this.container.telemetry.enabled) {
 									updateTelemetryContext(context);
-									container.telemetry.sendEvent('launchpad/groupToggled', {
-										...context.telemetryContext,
-										group: ui,
-										collapsed: collapsed,
-									});
+									this.container.telemetry.sendEvent(
+										'launchpad/groupToggled',
+										{
+											...context.telemetryContext!,
+											group: ui,
+											collapsed: collapsed,
+										},
+										this.source,
+									);
 								}
 							},
 						}),
@@ -357,11 +394,16 @@ export class FocusCommand extends QuickCommand<State> {
 							buttons.push(
 								i.viewer.pinned ? UnpinQuickInputButton : PinQuickInputButton,
 								i.viewer.snoozed ? UnsnoozeQuickInputButton : SnoozeQuickInputButton,
-								OpenOnGitHubQuickInputButton,
 							);
 
+							if (!i.openRepository?.localBranch?.current) {
+								buttons.push(OpenWorktreeInNewWindowQuickInputButton);
+							}
+
+							buttons.push(OpenOnGitHubQuickInputButton);
+
 							return {
-								label: i.title,
+								label: i.title.length > 60 ? `${i.title.substring(0, 60)}...` : i.title,
 								// description: `${i.repoAndOwner}#${i.id}, by @${i.author}`,
 								description: `\u00a0 ${i.repository.owner.login}/${i.repository.name}#${i.id} \u00a0 ${
 									i.codeSuggestionsCount > 0
@@ -386,18 +428,53 @@ export class FocusCommand extends QuickCommand<State> {
 			}
 
 			return items;
+		};
+
+		function getItemsAndPlaceholder() {
+			if (context.result.error != null) {
+				return {
+					placeholder: `Unable to load items (${String(context.result.error)})`,
+					items: [createDirectiveQuickPickItem(Directive.Cancel, undefined, { label: 'OK' })],
+				};
+			}
+
+			if (!context.result.items.length) {
+				return {
+					placeholder: 'All done! Take a vacation',
+					items: [createDirectiveQuickPickItem(Directive.Cancel, undefined, { label: 'OK' })],
+				};
+			}
+
+			return {
+				placeholder: 'Choose an item to focus on',
+				items: getItems(context.result),
+			};
 		}
 
-		const items = getItems(context.items);
+		const updateItems = async (quickpick: QuickPick<FocusItemQuickPickItem | DirectiveQuickPickItem>) => {
+			quickpick.busy = true;
+
+			try {
+				await updateContextItems(this.container, context, { force: true });
+
+				const { items, placeholder } = getItemsAndPlaceholder();
+				quickpick.placeholder = placeholder;
+				quickpick.items = items;
+			} finally {
+				quickpick.busy = false;
+			}
+		};
+
+		const { items, placeholder } = getItemsAndPlaceholder();
 
 		const step = createPickStep({
 			title: context.title,
-			placeholder: !items.length ? 'All done! Take a vacation' : 'Choose an item to focus on',
+			placeholder: placeholder,
 			matchOnDetail: true,
-			items: !items.length ? [createDirectiveQuickPickItem(Directive.Cancel, undefined, { label: 'OK' })] : items,
+			items: items,
 			buttons: [
 				FeedbackQuickInputButton,
-				OpenInEditorQuickInputButton,
+				OpenOnWebQuickInputButton,
 				LaunchpadSettingsQuickInputButton,
 				RefreshQuickInputButton,
 			],
@@ -405,28 +482,22 @@ export class FocusCommand extends QuickCommand<State> {
 			onDidClickButton: async (quickpick, button) => {
 				switch (button) {
 					case LaunchpadSettingsQuickInputButton:
+						this.sendTitleActionTelemetry('settings', context);
 						void commands.executeCommand('workbench.action.openSettings', 'gitlens.launchpad');
 						break;
+
 					case FeedbackQuickInputButton:
-						void openUrl('https://github.com/gitkraken/vscode-gitlens/discussions/3268');
+						this.sendTitleActionTelemetry('feedback', context);
+						void openUrl('https://github.com/gitkraken/vscode-gitlens/discussions/3286');
 						break;
-					case OpenInEditorQuickInputButton:
-						void executeCommand(Commands.ShowFocusPage);
+
+					case OpenOnWebQuickInputButton:
+						this.sendTitleActionTelemetry('open-on-gkdev', context);
+						void openUrl(this.container.focus.generateWebUrl());
 						break;
 					case RefreshQuickInputButton:
-						quickpick.busy = true;
-
-						try {
-							await updateContextItems(container, context, { force: true });
-							const items = getItems(context.items);
-
-							quickpick.placeholder = !items.length
-								? 'All done! Take a vacation'
-								: 'Choose an item to focus on';
-							quickpick.items = items;
-						} finally {
-							quickpick.busy = false;
-						}
+						this.sendTitleActionTelemetry('refresh', context);
+						await updateItems(quickpick);
 						break;
 				}
 			},
@@ -434,41 +505,42 @@ export class FocusCommand extends QuickCommand<State> {
 			onDidClickItemButton: async (quickpick, button, { group, item }) => {
 				switch (button) {
 					case OpenOnGitHubQuickInputButton:
+						this.sendItemActionTelemetry('soft-open', item, group, context);
 						this.container.focus.open(item);
 						break;
+
 					case SnoozeQuickInputButton:
+						this.sendItemActionTelemetry('snooze', item, group, context);
 						await this.container.focus.snooze(item);
 						break;
 
 					case UnsnoozeQuickInputButton:
+						this.sendItemActionTelemetry('unsnooze', item, group, context);
 						await this.container.focus.unsnooze(item);
 						break;
 
 					case PinQuickInputButton:
+						this.sendItemActionTelemetry('pin', item, group, context);
 						await this.container.focus.pin(item);
 						break;
 
 					case UnpinQuickInputButton:
+						this.sendItemActionTelemetry('unpin', item, group, context);
 						await this.container.focus.unpin(item);
 						break;
 
 					case MergeQuickInputButton:
+						this.sendItemActionTelemetry('merge', item, group, context);
 						await this.container.focus.merge(item);
+						break;
+
+					case OpenWorktreeInNewWindowQuickInputButton:
+						this.sendItemActionTelemetry('open-worktree', item, group, context);
+						await this.container.focus.switchTo(item, { skipWorktreeConfirmations: true });
 						break;
 				}
 
-				this.sendItemActionTelemetry(button, item, group, context);
-				quickpick.busy = true;
-
-				try {
-					await updateContextItems(container, context);
-					const items = getItems(context.items);
-
-					quickpick.placeholder = !items.length ? 'All done! Take a vacation' : 'Choose an item to focus on';
-					quickpick.items = items;
-				} finally {
-					quickpick.busy = false;
-				}
+				await updateItems(quickpick);
 			},
 		});
 
@@ -533,6 +605,7 @@ export class FocusCommand extends QuickCommand<State> {
 							{
 								label: 'Merge...',
 								detail: `Will merge ${from}${into}`,
+								buttons: [OpenOnGitHubQuickInputButton],
 							},
 							action,
 						),
@@ -544,6 +617,7 @@ export class FocusCommand extends QuickCommand<State> {
 						createQuickPickItemOfT(
 							{
 								label: `${this.getOpenActionLabel(state.item.actionableCategory)} on GitHub`,
+								buttons: [OpenOnGitHubQuickInputButton],
 							},
 							action,
 						),
@@ -555,6 +629,17 @@ export class FocusCommand extends QuickCommand<State> {
 							{
 								label: 'Switch to Branch or Worktree',
 								detail: 'Will checkout the branch, create or open a worktree',
+							},
+							action,
+						),
+					);
+					break;
+				case 'open-worktree':
+					confirmations.push(
+						createQuickPickItemOfT(
+							{
+								label: 'Open Worktree in New Window',
+								detail: 'Will create or open a worktree in a new window',
 							},
 							action,
 						),
@@ -628,16 +713,21 @@ export class FocusCommand extends QuickCommand<State> {
 				onDidClickItemButton: (_quickpick, button, item) => {
 					switch (button) {
 						case OpenOnGitHubQuickInputButton:
+							this.sendItemActionTelemetry('soft-open', state.item, state.item.group, context);
 							this.container.focus.open(state.item);
 							break;
 						case OpenOnWebQuickInputButton:
+							this.sendItemActionTelemetry(
+								'open-suggestion-browser',
+								state.item,
+								state.item.group,
+								context,
+							);
 							if (isFocusTargetActionQuickPickItem(item)) {
 								this.container.focus.openCodeSuggestionInBrowser(item.item.target);
 							}
 							break;
 					}
-
-					this.sendItemActionTelemetry(button, state.item, state.item.group, context);
 				},
 			},
 		);
@@ -712,7 +802,7 @@ export class FocusCommand extends QuickCommand<State> {
 				break;
 		}
 
-		if (item.codeSuggestions != null && item.codeSuggestions.length > 0) {
+		if (item.codeSuggestions?.value != null && item.codeSuggestions.value.length > 0) {
 			if (information.length > 0) {
 				information.push(createDirectiveQuickPickItem(Directive.Noop, false, { label: '' }));
 			}
@@ -752,12 +842,17 @@ export class FocusCommand extends QuickCommand<State> {
 			status = `$(pass) No conflicts`;
 		}
 
-		return createQuickPickItemOfT({ label: status }, 'soft-open');
+		return createQuickPickItemOfT({ label: status, buttons: [OpenOnGitHubQuickInputButton] }, 'soft-open');
 	}
 
 	private getFocusItemReviewInformation(item: FocusItem): QuickPickItemOfT<FocusAction>[] {
 		if (item.reviews == null || item.reviews.length === 0) {
-			return [createQuickPickItemOfT({ label: `$(info) No reviewers have been assigned` }, 'soft-open')];
+			return [
+				createQuickPickItemOfT(
+					{ label: `$(info) No reviewers have been assigned`, buttons: [OpenOnGitHubQuickInputButton] },
+					'soft-open',
+				),
+			];
 		}
 
 		const reviewInfo: QuickPickItemOfT<FocusAction>[] = [];
@@ -784,7 +879,12 @@ export class FocusCommand extends QuickCommand<State> {
 			}
 
 			if (reviewLabel != null) {
-				reviewInfo.push(createQuickPickItemOfT({ label: reviewLabel, iconPath: iconPath }, 'soft-open'));
+				reviewInfo.push(
+					createQuickPickItemOfT(
+						{ label: reviewLabel, iconPath: iconPath, buttons: [OpenOnGitHubQuickInputButton] },
+						'soft-open',
+					),
+				);
 			}
 		}
 
@@ -794,17 +894,17 @@ export class FocusCommand extends QuickCommand<State> {
 	private getFocusItemCodeSuggestionInformation(
 		item: FocusItem,
 	): (QuickPickItemOfT<FocusTargetAction> | DirectiveQuickPickItem)[] {
-		if (item.codeSuggestions == null || item.codeSuggestions.length === 0) {
+		if (item.codeSuggestions?.value == null || item.codeSuggestions.value.length === 0) {
 			return [];
 		}
 
 		const codeSuggestionInfo: (QuickPickItemOfT<FocusTargetAction> | DirectiveQuickPickItem)[] = [
 			createDirectiveQuickPickItem(Directive.Noop, false, {
-				label: `$(gitlens-code-suggestion) ${pluralize('code suggestion', item.codeSuggestions.length)}`,
+				label: `$(gitlens-code-suggestion) ${pluralize('code suggestion', item.codeSuggestions.value.length)}`,
 			}),
 		];
 
-		for (const suggestion of item.codeSuggestions) {
+		for (const suggestion of item.codeSuggestions.value) {
 			codeSuggestionInfo.push(
 				createQuickPickItemOfT(
 					{
@@ -848,7 +948,15 @@ export class FocusCommand extends QuickCommand<State> {
 	}
 
 	private sendItemActionTelemetry(
-		buttonOrAction: QuickInputButton | FocusAction | FocusTargetAction | 'select',
+		actionOrTargetAction:
+			| FocusAction
+			| FocusTargetAction
+			| 'pin'
+			| 'unpin'
+			| 'snooze'
+			| 'unsnooze'
+			| 'open-suggestion-browser'
+			| 'select',
 		item: FocusItem,
 		group: FocusGroup,
 		context: Context,
@@ -865,104 +973,109 @@ export class FocusCommand extends QuickCommand<State> {
 			| 'open-suggestion-browser'
 			| 'select'
 			| undefined;
-		if (typeof buttonOrAction !== 'string' && 'action' in buttonOrAction) {
-			action = buttonOrAction.action;
-		} else if (typeof buttonOrAction === 'string') {
-			action = buttonOrAction;
+		if (typeof actionOrTargetAction !== 'string' && 'action' in actionOrTargetAction) {
+			action = actionOrTargetAction.action;
 		} else {
-			switch (buttonOrAction) {
-				case MergeQuickInputButton:
-					action = 'merge';
-					break;
-				case OpenOnGitHubQuickInputButton:
-					action = 'soft-open';
-					break;
-				case PinQuickInputButton:
-					action = 'pin';
-					break;
-				case UnpinQuickInputButton:
-					action = 'unpin';
-					break;
-				case SnoozeQuickInputButton:
-					action = 'snooze';
-					break;
-				case UnsnoozeQuickInputButton:
-					action = 'unsnooze';
-					break;
-				case OpenOnWebQuickInputButton:
-					action = 'open-suggestion-browser';
-					break;
-			}
+			action = actionOrTargetAction;
 		}
 		if (action == null) return;
 
-		this.container.telemetry.sendEvent(action === 'select' ? 'launchpad/steps/details' : 'launchpad/action', {
-			...context.telemetryContext,
-			action: action,
-			'item.id': getFocusItemIdHash(item),
-			'item.type': item.type,
-			'item.provider': item.provider.id,
-			'item.actionableCategory': item.actionableCategory,
-			'item.group': group,
-			'item.assignees.count': item.assignees?.length ?? undefined,
-			'item.createdDate': item.createdDate.getTime(),
-			'item.updatedDate': item.updatedDate.getTime(),
-			'item.isNew': item.isNew,
+		this.container.telemetry.sendEvent(
+			action === 'select' ? 'launchpad/steps/details' : 'launchpad/action',
+			{
+				...context.telemetryContext!,
+				action: action,
+				'item.id': getFocusItemIdHash(item),
+				'item.type': item.type,
+				'item.provider': item.provider.id,
+				'item.actionableCategory': item.actionableCategory,
+				'item.group': group,
+				'item.assignees.count': item.assignees?.length ?? undefined,
+				'item.createdDate': item.createdDate.getTime(),
+				'item.updatedDate': item.updatedDate.getTime(),
+				'item.isNew': item.isNew,
 
-			'item.comments.count': item.commentCount,
-			'item.upvotes.count': item.upvoteCount,
+				'item.comments.count': item.commentCount ?? undefined,
+				'item.upvotes.count': item.upvoteCount ?? undefined,
 
-			'item.pr.codeSuggestionCount': item.codeSuggestionsCount,
-			'item.pr.isDraft': item.isDraft,
-			'item.pr.mergeableState': item.mergeableState,
-			'item.pr.state': item.state,
+				'item.pr.codeSuggestionCount': item.codeSuggestionsCount,
+				'item.pr.isDraft': item.isDraft,
+				'item.pr.mergeableState': item.mergeableState,
+				'item.pr.state': item.state,
 
-			'item.pr.changes.additions': item.additions ?? undefined,
-			'item.pr.changes.deletions': item.deletions ?? undefined,
-			'item.pr.changes.commits': item.commitCount ?? undefined,
-			'item.pr.changes.files': item.fileCount ?? undefined,
+				'item.pr.changes.additions': item.additions ?? undefined,
+				'item.pr.changes.deletions': item.deletions ?? undefined,
+				'item.pr.changes.commits': item.commitCount ?? undefined,
+				'item.pr.changes.files': item.fileCount ?? undefined,
 
-			'item.pr.failingCI': item.failingCI,
-			'item.pr.hasConflicts': item.hasConflicts,
+				'item.pr.failingCI': item.failingCI,
+				'item.pr.hasConflicts': item.hasConflicts,
 
-			'item.pr.reviews.count': item.reviews?.length ?? undefined,
-			'item.pr.reviews.decision': item.reviewDecision,
-			'item.pr.reviews.changeRequestCount': item.changeRequestReviewCount ?? undefined,
+				'item.pr.reviews.count': item.reviews?.length ?? undefined,
+				'item.pr.reviews.decision': item.reviewDecision ?? undefined,
+				'item.pr.reviews.changeRequestCount': item.changeRequestReviewCount ?? undefined,
 
-			'item.viewer.isAuthor': item.viewer.isAuthor,
-			'item.viewer.isAssignee': item.viewer.isAssignee,
-			'item.viewer.pinned': item.viewer.pinned,
-			'item.viewer.snoozed': item.viewer.snoozed,
-			'item.viewer.pr.canMerge': item.viewer.canMerge,
-			'item.viewer.pr.isReviewer': item.viewer.isReviewer,
-			'item.viewer.pr.shouldAssignReviewer': item.viewer.shouldAssignReviewer,
-			'item.viewer.pr.shouldMerge': item.viewer.shouldMerge,
-			'item.viewer.pr.shouldReview': item.viewer.shouldReview,
-			'item.viewer.pr.waitingOnReviews': item.viewer.waitingOnReviews,
-		});
+				'item.viewer.isAuthor': item.viewer.isAuthor,
+				'item.viewer.isAssignee': item.viewer.isAssignee,
+				'item.viewer.pinned': item.viewer.pinned,
+				'item.viewer.snoozed': item.viewer.snoozed,
+				'item.viewer.pr.canMerge': item.viewer.canMerge,
+				'item.viewer.pr.isReviewer': item.viewer.isReviewer,
+				'item.viewer.pr.shouldAssignReviewer': item.viewer.shouldAssignReviewer,
+				'item.viewer.pr.shouldMerge': item.viewer.shouldMerge,
+				'item.viewer.pr.shouldReview': item.viewer.shouldReview,
+				'item.viewer.pr.waitingOnReviews': item.viewer.waitingOnReviews,
+			},
+			this.source,
+		);
+	}
+
+	private sendTitleActionTelemetry(action: TelemetryEvents['launchpad/title/action']['action'], context: Context) {
+		if (!this.container.telemetry.enabled) return;
+
+		this.container.telemetry.sendEvent(
+			'launchpad/title/action',
+			{ ...context.telemetryContext!, action: action },
+			this.source,
+		);
 	}
 }
 
 async function updateContextItems(container: Container, context: Context, options?: { force?: boolean }) {
-	context.items = await container.focus.getCategorizedItems(options);
+	context.result = await container.focus.getCategorizedItems(options);
 	if (container.telemetry.enabled) {
 		updateTelemetryContext(context);
 	}
 }
 
 function updateTelemetryContext(context: Context) {
-	const grouped = countFocusItemGroups(context.items);
+	if (context.telemetryContext == null) return;
 
-	context.telemetryContext = {
-		...context.telemetryContext,
-		'items.count': context.items.length,
-		'groups.count': grouped.size,
-	};
+	let updatedContext: NonNullable<(typeof context)['telemetryContext']>;
+	if (context.result.error != null) {
+		updatedContext = {
+			...context.telemetryContext,
+			'items.error': String(context.result.error),
+		};
+	} else {
+		const grouped = countFocusItemGroups(context.result.items);
 
-	for (const [group, count] of grouped) {
-		context.telemetryContext[`groups.${group}.count`] = count;
-		context.telemetryContext[`groups.${group}.collapsed`] = context.collapsed.get(group);
+		updatedContext = {
+			...context.telemetryContext,
+			'items.count': context.result.items.length,
+			'items.timings.prs': context.result.timings?.prs,
+			'items.timings.codeSuggestionCounts': context.result.timings?.codeSuggestionCounts,
+			'items.timings.enrichedItems': context.result.timings?.enrichedItems,
+			'groups.count': grouped.size,
+		};
+
+		for (const [group, count] of grouped) {
+			updatedContext[`groups.${group}.count`] = count;
+			updatedContext[`groups.${group}.collapsed`] = context.collapsed.get(group);
+		}
 	}
+
+	context.telemetryContext = updatedContext;
 }
 
 function isFocusTargetActionQuickPickItem(item: any): item is QuickPickItemOfT<FocusTargetAction> {

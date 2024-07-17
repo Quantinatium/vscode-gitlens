@@ -1,18 +1,16 @@
 import type { AuthenticationSession, Disposable, QuickInputButton } from 'vscode';
 import { env, ThemeIcon, Uri, window } from 'vscode';
 import { base64 } from '../../../system/string';
-import { supportedInVSCodeVersion } from '../../../system/utils';
-import type {
-	IntegrationAuthenticationProvider,
-	IntegrationAuthenticationSessionDescriptor,
-} from './integrationAuthentication';
+import { HostingIntegrationId } from '../providers/models';
+import type { IntegrationAuthenticationSessionDescriptor } from './integrationAuthentication';
+import { LocalIntegrationAuthenticationProvider } from './integrationAuthentication';
 
-export class BitbucketAuthenticationProvider implements IntegrationAuthenticationProvider {
-	getSessionId(descriptor?: IntegrationAuthenticationSessionDescriptor): string {
-		return descriptor?.domain ?? '';
+export class BitbucketAuthenticationProvider extends LocalIntegrationAuthenticationProvider<HostingIntegrationId.Bitbucket> {
+	protected override get authProviderId(): HostingIntegrationId.Bitbucket {
+		return HostingIntegrationId.Bitbucket;
 	}
 
-	async createSession(
+	override async createSession(
 		descriptor?: IntegrationAuthenticationSessionDescriptor,
 	): Promise<AuthenticationSession | undefined> {
 		let bitbucketUsername: string | undefined = descriptor?.username as string | undefined;
@@ -52,11 +50,9 @@ export class BitbucketAuthenticationProvider implements IntegrationAuthenticatio
 						descriptor?.domain ? `  \u2022 ${descriptor.domain}` : ''
 					}`;
 					usernameInput.placeholder = 'Username';
-					usernameInput.prompt = supportedInVSCodeVersion('input-prompt-links')
-						? `Enter your [Bitbucket Username](https://${
-								descriptor?.domain ?? 'bitbucket.org'
-						  }/account/settings/ "Get your Bitbucket App Password")`
-						: 'Enter your Bitbucket Username';
+					usernameInput.prompt = `Enter your [Bitbucket Username](https://${
+						descriptor?.domain ?? 'bitbucket.org'
+					}/account/settings/ "Get your Bitbucket App Password")`;
 					usernameInput.show();
 				});
 			} finally {
@@ -108,11 +104,9 @@ export class BitbucketAuthenticationProvider implements IntegrationAuthenticatio
 					descriptor?.domain ? `  \u2022 ${descriptor.domain}` : ''
 				}`;
 				appPasswordInput.placeholder = `Requires ${descriptor?.scopes.join(', ') ?? 'all'} scopes`;
-				appPasswordInput.prompt = supportedInVSCodeVersion('input-prompt-links')
-					? `Paste your [Bitbucket App Password](https://${
-							descriptor?.domain ?? 'bitbucket.org'
-					  }/account/settings/app-passwords/ "Get your Bitbucket App Password")`
-					: 'Paste your Bitbucket App Password';
+				appPasswordInput.prompt = `Paste your [Bitbucket App Password](https://${
+					descriptor?.domain ?? 'bitbucket.org'
+				}/account/settings/app-passwords/ "Get your Bitbucket App Password")`;
 				appPasswordInput.buttons = [infoButton];
 
 				appPasswordInput.show();

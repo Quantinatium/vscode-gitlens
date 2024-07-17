@@ -15,7 +15,7 @@ import { maybeStopWatch } from '../system/stopwatch';
 import type { TokenOptions } from '../system/string';
 import { getTokensFromTemplate, getWidth } from '../system/string';
 import type { TrackedGitDocument } from '../trackers/trackedDocument';
-import type { AnnotationContext, AnnotationState } from './annotationProvider';
+import type { AnnotationContext, AnnotationState, DidChangeStatusCallback } from './annotationProvider';
 import { applyHeatmap, getGutterDecoration, getGutterRenderOptions } from './annotations';
 import { BlameAnnotationProviderBase } from './blameAnnotationProvider';
 import { Decorations } from './fileAnnotationController';
@@ -25,16 +25,22 @@ const maxSmallIntegerV8 = 2 ** 30 - 1; // Max number that can be stored in V8's 
 export interface BlameFontOptions {
 	family: string;
 	size: number;
+	style: string;
 	weight: string;
 }
 
 export class GutterBlameAnnotationProvider extends BlameAnnotationProviderBase {
-	constructor(container: Container, editor: TextEditor, trackedDocument: TrackedGitDocument) {
-		super(container, 'blame', editor, trackedDocument);
+	constructor(
+		container: Container,
+		onDidChangeStatus: DidChangeStatusCallback,
+		editor: TextEditor,
+		trackedDocument: TrackedGitDocument,
+	) {
+		super(container, onDidChangeStatus, 'blame', editor, trackedDocument);
 	}
 
-	override clear() {
-		super.clear();
+	override async clear() {
+		await super.clear();
 
 		if (Decorations.gutterBlameHighlight != null) {
 			try {
@@ -77,6 +83,7 @@ export class GutterBlameAnnotationProvider extends BlameAnnotationProviderBase {
 		const fontOptions: BlameFontOptions = {
 			family: configuration.get('blame.fontFamily'),
 			size: configuration.get('blame.fontSize'),
+			style: configuration.get('blame.fontStyle'),
 			weight: configuration.get('blame.fontWeight'),
 		};
 

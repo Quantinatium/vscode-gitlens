@@ -19,9 +19,11 @@ import React, { createElement, useEffect, useMemo, useRef, useState } from 'reac
 import { getPlatform } from '@env/platform';
 import type { DateStyle } from '../../../../config';
 import type { SearchQuery } from '../../../../git/search';
+import type { FocusCommandArgs } from '../../../../plus/focus/focus';
 import type { Subscription } from '../../../../plus/gk/account/subscription';
 import type {
 	DidEnsureRowParams,
+	DidGetRowHoverParams,
 	DidSearchParams,
 	GraphAvatars,
 	GraphColumnName,
@@ -71,6 +73,7 @@ import { GlSearchBox } from '../../shared/components/search/react';
 import type { SearchNavigationEventDetail } from '../../shared/components/search/search-box';
 import type { DateTimeFormat } from '../../shared/date';
 import { formatDate, fromNow } from '../../shared/date';
+import { GlGraphHover } from './hover/graphHover.react';
 import type { GraphMinimapDaySelectedEventDetail } from './minimap/minimap';
 import { GlGraphMinimapContainer } from './minimap/minimap-container.react';
 
@@ -80,9 +83,9 @@ export interface GraphWrapperProps {
 	subscriber: (callback: UpdateStateCallback) => () => void;
 	onChooseRepository?: () => void;
 	onColumnsChange?: (colsSettings: GraphColumnsConfig) => void;
-	onDimMergeCommits?: (dim: boolean) => void;
 	onDoubleClickRef?: (ref: GraphRef, metadata?: GraphRefMetadataItem) => void;
 	onDoubleClickRow?: (row: GraphRow, preserveFocus?: boolean) => void;
+	onHoverRowPromise?: (row: GraphRow) => Promise<DidGetRowHoverParams | undefined>;
 	onMissingAvatars?: (emails: Record<string, string>) => void;
 	onMissingRefsMetadata?: (metadata: GraphMissingRefsMetadata) => void;
 	onMoreRows?: (id?: string) => void;
@@ -203,10 +206,10 @@ export function GraphWrapper({
 	state,
 	onChooseRepository,
 	onColumnsChange,
-	onDimMergeCommits,
 	onDoubleClickRef,
 	onDoubleClickRow,
 	onEnsureRowPromise,
+	onHoverRowPromise,
 	onMissingAvatars,
 	onMissingRefsMetadata,
 	onMoreRows,
@@ -268,6 +271,7 @@ export function GraphWrapper({
 	);
 
 	const minimap = useRef<GlGraphMinimapContainer | undefined>(undefined);
+	const hover = useRef<GlGraphHover | undefined>(undefined);
 
 	const ensuredIds = useRef<Set<string>>(new Set());
 	const ensuredSkippedIds = useRef<Set<string>>(new Set());
@@ -301,6 +305,7 @@ export function GraphWrapper({
 				setContext(state.context);
 				break;
 			case DidChangeRowsNotification:
+				hover.current?.reset();
 				setRows(state.rows ?? []);
 				setRowsStats(state.rowsStats);
 				setRowsStatsLoading(state.rowsStatsLoading);
@@ -345,6 +350,7 @@ export function GraphWrapper({
 				setLastFetched(state.lastFetched);
 				break;
 			default: {
+				hover.current?.reset();
 				setAllowed(state.allowed ?? false);
 				if (!themingChanged) {
 					setStyleProps(state.theming);
@@ -465,14 +471,59 @@ export function GraphWrapper({
 		}
 	};
 
-	const handleOnGraphMouseLeave = (_event: any) => {
+	const handleOnGraphMouseLeave = (_event: React.MouseEvent<any>) => {
 		minimap.current?.unselect(undefined, true);
 	};
 
-	const handleOnGraphRowHovered = (_event: any, graphZoneType: GraphZoneType, graphRow: GraphRow) => {
-		if (graphZoneType === refZone || minimap.current == null) return;
+	const handleOnGraphRowHovered = (
+		event: React.MouseEvent<any>,
+		graphZoneType: GraphZoneType,
+		graphRow: GraphRow,
+	) => {
+		if (graphZoneType === refZone) return;
 
 		minimap.current?.select(graphRow.date, true);
+
+		if (onHoverRowPromise == null) return;
+
+		const hoverComponent = hover.current;
+		if (hoverComponent == null) return;
+
+		const { clientX } = event;
+
+		const rect = event.currentTarget.getBoundingClientRect() as DOMRect;
+		const x = clientX;
+		const y = rect.top;
+		const height = rect.height;
+		const width = 60; // Add some width, so `skidding` will be able to apply
+
+		const anchor = {
+			getBoundingClientRect: function () {
+				return {
+					width: width,
+					height: height,
+					x: x,
+					y: y,
+					top: y,
+					left: x,
+					right: x + width,
+					bottom: y + height,
+				};
+			},
+		};
+
+		hoverComponent.requestMarkdown ??= onHoverRowPromise;
+		hoverComponent.onRowHovered(graphRow, anchor);
+	};
+
+	const handleOnGraphRowUnhovered = (
+		event: React.MouseEvent<any>,
+		graphZoneType: GraphZoneType,
+		graphRow: GraphRow,
+	) => {
+		if (graphZoneType === refZone) return;
+
+		hover.current?.onRowUnhovered(graphRow, event.relatedTarget);
 	};
 
 	useEffect(() => {
@@ -502,10 +553,11 @@ export function GraphWrapper({
 	}, [includeOnlyRefsById]);
 
 	const hasFilters = useMemo(() => {
-		if (!isAllBranches) return true;
+		if (!isAllBranches || graphConfig?.onlyFollowFirstParent) return true;
 		if (excludeTypes == null) return false;
+
 		return Object.values(excludeTypes).includes(true);
-	}, [excludeTypes, isAllBranches, graphConfig?.dimMergeCommits]);
+	}, [excludeTypes, isAllBranches, graphConfig?.onlyFollowFirstParent]);
 
 	const hasSpecialFilters = useMemo(() => {
 		return !isAllBranches;
@@ -650,15 +702,27 @@ export function GraphWrapper({
 		onChooseRepository?.();
 	};
 
-	const handleExcludeTypeChange = (e: Event | FormEvent<HTMLElement>) => {
+	const handleFilterChange = (e: Event | FormEvent<HTMLElement>) => {
 		const $el = e.target as HTMLInputElement;
 
 		const value = $el.value;
-		const isLocalBranches = ['branch-all', 'branch-current'].includes(value);
-		if (!isLocalBranches && !['remotes', 'stashes', 'tags', 'mergeCommits'].includes(value)) return;
 		const isChecked = $el.checked;
-		if (value === 'mergeCommits') {
-			onDimMergeCommits?.(isChecked);
+
+		switch (value) {
+			case 'mergeCommits':
+				onUpdateGraphConfiguration?.({ dimMergeCommits: isChecked });
+				return;
+
+			case 'onlyFollowFirstParent':
+				onUpdateGraphConfiguration?.({ onlyFollowFirstParent: isChecked });
+				return;
+		}
+
+		const isLocalBranches = ['branch-all', 'branch-current'].includes(value);
+		if (
+			!isLocalBranches &&
+			!['remotes', 'stashes', 'tags', 'mergeCommits', 'onlyFollowFirstParent'].includes(value)
+		) {
 			return;
 		}
 
@@ -965,7 +1029,7 @@ export function GraphWrapper({
 		const fetchedText = lastFetchedDate && lastFetchedDate.getTime() !== 0 ? fromNow(lastFetchedDate) : undefined;
 
 		return (
-			<div className="titlebar__group">
+			<>
 				{(isBehind || isAhead) && (
 					<GlTooltip placement="bottom">
 						<a
@@ -1026,140 +1090,150 @@ export function GraphWrapper({
 						)}
 					</span>
 				</GlTooltip>
-			</div>
+			</>
 		);
 	};
 
 	return (
 		<>
 			<header className="titlebar graph-app__header">
-				<div
-					className={`titlebar__row titlebar__row--wrap${
-						!allowed ? ' disallowed' : repo && branchState?.provider?.url ? '' : ' no-remote-provider'
-					}`}
-				>
-					{repo && branchState?.provider?.url && (
-						<GlTooltip placement="bottom">
-							<a
-								href={branchState.provider.url}
-								className="action-button"
-								style={{ marginRight: '-0.5rem' }}
-								aria-label={`Open Repository on ${branchState.provider.name}`}
-							>
-								<span
-									className={
-										branchState.provider.icon === 'cloud'
-											? 'codicon codicon-cloud action-button__icon'
-											: `glicon glicon-provider-${branchState.provider.icon} action-button__icon`
-									}
-									aria-hidden="true"
-								></span>
-							</a>
-							<span slot="content">Open Repository on {branchState.provider.name}</span>
-						</GlTooltip>
-					)}
-					<GlTooltip placement="bottom">
-						<button
-							type="button"
-							className="action-button"
-							aria-label="Switch to Another Repository..."
-							disabled={repos.length < 2}
-							onClick={() => handleChooseRepository()}
-						>
-							{repo?.formattedName ?? 'none selected'}
-							{repos.length > 1 && (
-								<span
-									className="codicon codicon-chevron-down action-button__more"
-									aria-hidden="true"
-								></span>
-							)}
-						</button>
-						<span slot="content">Switch to Another Repository...</span>
-					</GlTooltip>
-					{allowed && repo && (
-						<>
-							<span>
-								<span className="codicon codicon-chevron-right"></span>
-							</span>
-							{branchState?.pr && (
-								<GlPopover placement="bottom">
-									<button slot="anchor" type="button" className="action-button">
-										<GlIssuePullRequest
-											type="pr"
-											identifier={`#${branchState.pr.id}`}
-											status={branchState.pr.state}
-											compact
-										/>
-									</button>
-									<div slot="content">
-										<GlIssuePullRequest
-											type="pr"
-											name={branchState.pr.title}
-											url={branchState.pr.url}
-											identifier={`#${branchState.pr.id}`}
-											status={branchState.pr.state}
-											date={branchState.pr.updatedDate}
-											dateFormat={graphConfig?.dateFormat}
-											dateStyle={graphConfig?.dateStyle}
-											details
-											onOpenDetails={() =>
-												branchState.pr?.id ? onOpenPullRequest?.(branchState.pr) : undefined
-											}
-										/>
-									</div>
-								</GlPopover>
-							)}
-							<GlPopover placement="bottom">
+				<div className="titlebar__row titlebar__row--wrap">
+					<div className="titlebar__group">
+						{repo && branchState?.provider?.url && (
+							<GlTooltip placement="bottom">
 								<a
-									slot="anchor"
-									href={createWebviewCommandLink(
-										'gitlens.graph.switchToAnotherBranch',
-										state.webviewId,
-										state.webviewInstanceId,
-									)}
+									href={branchState.provider.url}
 									className="action-button"
-									style={branchState?.pr ? { marginLeft: '-0.6rem' } : {}}
-									aria-label="Switch to Another Branch..."
+									style={{ marginRight: '-0.5rem' }}
+									aria-label={`Open Repository on ${branchState.provider.name}`}
 								>
-									{!branchState?.pr ? (
-										<span className="codicon codicon-git-branch" aria-hidden="true"></span>
-									) : (
-										''
-									)}
-									{branchName}
+									<span
+										className={
+											branchState.provider.icon === 'cloud'
+												? 'codicon codicon-cloud action-button__icon'
+												: `glicon glicon-provider-${branchState.provider.icon} action-button__icon`
+										}
+										aria-hidden="true"
+									></span>
+								</a>
+								<span slot="content">Open Repository on {branchState.provider.name}</span>
+							</GlTooltip>
+						)}
+						<GlTooltip placement="bottom">
+							<button
+								type="button"
+								className="action-button"
+								aria-label="Switch to Another Repository..."
+								disabled={repos.length < 2}
+								onClick={() => handleChooseRepository()}
+							>
+								{repo?.formattedName ?? 'none selected'}
+								{repos.length > 1 && (
 									<span
 										className="codicon codicon-chevron-down action-button__more"
 										aria-hidden="true"
 									></span>
-								</a>
-								<div slot="content">
-									<span>
-										Switch to Another Branch...
-										<hr />
-										<span className="codicon codicon-git-branch" aria-hidden="true"></span>{' '}
-										<span className="md-code">{branchName}</span>
-									</span>
-								</div>
-							</GlPopover>
-							<span>
-								<span className="codicon codicon-chevron-right"></span>
+								)}
+							</button>
+							<span slot="content">Switch to Another Repository...</span>
+						</GlTooltip>
+						{allowed && repo && (
+							<>
+								<span>
+									<span className="codicon codicon-chevron-right"></span>
+								</span>
+								{branchState?.pr && (
+									<GlPopover placement="bottom">
+										<button slot="anchor" type="button" className="action-button">
+											<GlIssuePullRequest
+												type="pr"
+												identifier={`#${branchState.pr.id}`}
+												status={branchState.pr.state}
+												compact
+											/>
+										</button>
+										<div slot="content">
+											<GlIssuePullRequest
+												type="pr"
+												name={branchState.pr.title}
+												url={branchState.pr.url}
+												identifier={`#${branchState.pr.id}`}
+												status={branchState.pr.state}
+												date={branchState.pr.updatedDate}
+												dateFormat={graphConfig?.dateFormat}
+												dateStyle={graphConfig?.dateStyle}
+												details
+												onOpenDetails={() =>
+													branchState.pr?.id ? onOpenPullRequest?.(branchState.pr) : undefined
+												}
+											/>
+										</div>
+									</GlPopover>
+								)}
+								<GlPopover placement="bottom">
+									<a
+										slot="anchor"
+										href={createWebviewCommandLink(
+											'gitlens.graph.switchToAnotherBranch',
+											state.webviewId,
+											state.webviewInstanceId,
+										)}
+										className="action-button"
+										style={branchState?.pr ? { marginLeft: '-0.6rem' } : {}}
+										aria-label="Switch to Another Branch..."
+									>
+										{!branchState?.pr ? (
+											<span className="codicon codicon-git-branch" aria-hidden="true"></span>
+										) : (
+											''
+										)}
+										{branchName}
+										<span
+											className="codicon codicon-chevron-down action-button__more"
+											aria-hidden="true"
+										></span>
+									</a>
+									<div slot="content">
+										<span>
+											Switch to Another Branch...
+											<hr />
+											<span className="codicon codicon-git-branch" aria-hidden="true"></span>{' '}
+											<span className="md-code">{branchName}</span>
+										</span>
+									</div>
+								</GlPopover>
+								<span>
+									<span className="codicon codicon-chevron-right"></span>
+								</span>
+								{renderFetchAction()}
+							</>
+						)}
+					</div>
+					<div className="titlebar__group">
+						<GlTooltip placement="bottom">
+							<a
+								href={`command:gitlens.showLaunchpad?${encodeURIComponent(
+									JSON.stringify({
+										source: 'graph',
+									} satisfies Omit<FocusCommandArgs, 'command'>),
+								)}`}
+								className="action-button"
+							>
+								<span className="codicon codicon-rocket"></span>
+								Launchpad
+							</a>
+							<span slot="content">
+								<span style={{ whiteSpace: 'break-spaces' }}>
+									Launchpad organizes your pull requests into actionable groups to help you focus and
+									keep your team unblocked
+								</span>
 							</span>
-							{renderFetchAction()}
-						</>
-					)}
-					<GlTooltip placement="bottom">
-						<a href="command:gitlens.showLaunchpad" className="action-button">
-							<span className="codicon codicon-rocket"></span>
-							Launchpad
-						</a>
-						<span slot="content">
-							<span style={{ whiteSpace: 'break-spaces' }}>
-								Launchpad organizes your pull requests into actionable groups to help you focus and keep
-								your team unblocked
-							</span>
-						</span>
-					</GlTooltip>
-					<GlFeatureBadge subscription={subscription}></GlFeatureBadge>
+						</GlTooltip>
+						<GlFeatureBadge
+							source={{ source: 'graph', detail: 'badge' }}
+							subscription={subscription}
+						></GlFeatureBadge>
+					</div>
 				</div>
 				{allowed && (
 					<div className="titlebar__row">
@@ -1206,7 +1280,7 @@ export function GraphWrapper({
 												<MenuItem role="none">
 													<VSCodeCheckbox
 														value="remotes"
-														onChange={handleExcludeTypeChange}
+														onChange={handleFilterChange}
 														defaultChecked={excludeTypes?.remotes ?? false}
 													>
 														Hide Remote-only Branches
@@ -1215,7 +1289,7 @@ export function GraphWrapper({
 												<MenuItem role="none">
 													<VSCodeCheckbox
 														value="stashes"
-														onChange={handleExcludeTypeChange}
+														onChange={handleFilterChange}
 														defaultChecked={excludeTypes?.stashes ?? false}
 													>
 														Hide Stashes
@@ -1226,17 +1300,33 @@ export function GraphWrapper({
 										<MenuItem role="none">
 											<VSCodeCheckbox
 												value="tags"
-												onChange={handleExcludeTypeChange}
+												onChange={handleFilterChange}
 												defaultChecked={excludeTypes?.tags ?? false}
 											>
 												Hide Tags
 											</VSCodeCheckbox>
 										</MenuItem>
 										<MenuDivider></MenuDivider>
+										{repo?.isVirtual !== true && (
+											<MenuItem role="none">
+												<GlTooltip
+													placement="right"
+													content="Only follow the first parent of merge commits to provide a more linear history"
+												>
+													<VSCodeCheckbox
+														value="onlyFollowFirstParent"
+														onChange={handleFilterChange}
+														defaultChecked={graphConfig?.onlyFollowFirstParent ?? false}
+													>
+														Simplify Merge History
+													</VSCodeCheckbox>
+												</GlTooltip>
+											</MenuItem>
+										)}
 										<MenuItem role="none">
 											<VSCodeCheckbox
 												value="mergeCommits"
-												onChange={handleExcludeTypeChange}
+												onChange={handleFilterChange}
 												defaultChecked={graphConfig?.dimMergeCommits ?? false}
 											>
 												Dim Merge Commit Rows
@@ -1350,6 +1440,22 @@ export function GraphWrapper({
 											</MenuItem>
 											<MenuItem role="none">
 												<VSCodeCheckbox
+													value="pullRequests"
+													onChange={handleOnMinimapAdditionalTypesChange}
+													defaultChecked={
+														graphConfig?.minimapMarkerTypes?.includes('pullRequests') ??
+														true
+													}
+												>
+													<span
+														className="minimap-marker-swatch"
+														data-marker="pullRequests"
+													></span>
+													Pull Requests
+												</VSCodeCheckbox>
+											</MenuItem>
+											<MenuItem role="none">
+												<VSCodeCheckbox
 													value="stashes"
 													onChange={handleOnMinimapAdditionalTypesChange}
 													defaultChecked={
@@ -1394,6 +1500,7 @@ export function GraphWrapper({
 				className="graph-app__gate"
 				appearance="alert"
 				featureWithArticleIfNeeded="the Commit Graph"
+				source={{ source: 'graph', detail: 'gate' }}
 				state={subscription?.state}
 				visible={!allowed}
 			>
@@ -1401,9 +1508,13 @@ export function GraphWrapper({
 					<a href="https://help.gitkraken.com/gitlens/gitlens-features/#commit-graph-%e2%9c%a8">
 						Commit Graph
 					</a>
-					<GlFeatureBadge subscription={subscription}></GlFeatureBadge> &mdash; easily visualize your
-					repository and keep track of all work in progress. Use the rich commit search to find a specific
-					commit, message, author, a changed file or files, or even a specific code change.
+					<GlFeatureBadge
+						source={{ source: 'graph', detail: 'badge' }}
+						subscription={subscription}
+					></GlFeatureBadge>{' '}
+					&mdash; easily visualize your repository and keep track of all work in progress. Use the rich commit
+					search to find a specific commit, message, author, a changed file or files, or even a specific code
+					change.
 				</p>
 			</GlFeatureGate>
 			<GlGraphMinimapContainer
@@ -1413,10 +1524,19 @@ export function GraphWrapper({
 				rows={rows}
 				rowsStats={rowsStats}
 				dataType={graphConfig?.minimapDataType ?? 'commits'}
+				markerTypes={graphConfig?.minimapMarkerTypes}
+				refMetadata={refsMetadata}
 				searchResults={searchResults}
 				visibleDays={visibleDays}
 				onSelected={e => handleOnMinimapDaySelected(e)}
 			></GlGraphMinimapContainer>
+			<GlGraphHover
+				ref={hover as any}
+				id="commit-hover"
+				distance={0}
+				skidding={15}
+				placement="bottom-start"
+			></GlGraphHover>
 			<main id="main" className="graph-app__main" aria-hidden={!allowed}>
 				{repo !== undefined ? (
 					<>
@@ -1453,8 +1573,9 @@ export function GraphWrapper({
 							onDoubleClickGraphRow={handleOnDoubleClickRow}
 							onDoubleClickGraphRef={handleOnDoubleClickRef}
 							onGraphColumnsReOrdered={handleOnGraphColumnsReOrdered}
-							onGraphMouseLeave={minimap.current ? handleOnGraphMouseLeave : undefined}
-							onGraphRowHovered={minimap.current ? handleOnGraphRowHovered : undefined}
+							onGraphMouseLeave={handleOnGraphMouseLeave}
+							onGraphRowHovered={handleOnGraphRowHovered}
+							onGraphRowUnhovered={handleOnGraphRowUnhovered}
 							onRowContextMenu={handleRowContextMenu}
 							onSettingsClick={handleToggleColumnSettings}
 							onSelectGraphRows={handleSelectGraphRows}
@@ -1469,6 +1590,7 @@ export function GraphWrapper({
 							rowsStatsLoading={rowsStatsLoading}
 							shaLength={graphConfig?.idLength}
 							shiftSelectMode="simple"
+							suppressNonRefRowTooltips
 							themeOpacityFactor={styleProps?.themeOpacityFactor}
 							useAuthorInitialsForAvatars={!graphConfig?.avatars}
 							workDirStats={workingTreeStats}

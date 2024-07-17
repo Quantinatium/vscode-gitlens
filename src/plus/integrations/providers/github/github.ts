@@ -48,52 +48,45 @@ import type {
 	GitHubCommit,
 	GitHubCommitRef,
 	GitHubContributor,
-	GitHubDetailedPullRequest,
-	GitHubIssueDetailed,
+	GitHubIssue,
 	GitHubIssueOrPullRequest,
 	GitHubPagedResult,
 	GitHubPageInfo,
 	GitHubPullRequest,
+	GitHubPullRequestLite,
 	GitHubPullRequestState,
 	GitHubTag,
 } from './models';
 import {
-	fromGitHubIssueDetailed,
+	fromGitHubIssue,
+	fromGitHubIssueOrPullRequestState,
 	fromGitHubPullRequest,
-	fromGitHubPullRequestDetailed,
-	fromGitHubPullRequestState,
+	fromGitHubPullRequestLite,
 } from './models';
 
 const emptyPagedResult: PagedResult<any> = Object.freeze({ values: [] });
 const emptyBlameResult: GitHubBlame = Object.freeze({ ranges: [] });
 
-const prNodeProperties = `
-assignees(first: 10) {
-	nodes {
-		login
-		avatarUrl
-		url
-	}
-}
+const gqlIssueOrPullRequestFragment = `
+closed
+closedAt
+createdAt
+id
+number
+state
+title
+updatedAt
+url
+`;
+const gqlPullRequestLiteFragment = `
+${gqlIssueOrPullRequestFragment}
 author {
 	login
-	avatarUrl
+	avatarUrl(size: $avatarSize)
 	url
 }
 baseRefName
 baseRefOid
-baseRepository {
-	name
-	owner {
-		login
-	}
-	url
-}
-checksUrl
-createdAt
-isDraft
-isCrossRepository
-isReadByViewer
 headRefName
 headRefOid
 headRepository {
@@ -103,33 +96,47 @@ headRepository {
 	}
 	url
 }
-permalink
-id
-number
-title
-state
-additions
-deletions
-updatedAt
-closedAt
-mergeable
-viewerCanUpdate
+isCrossRepository
 mergedAt
-mergedBy {
-	login
-}
-reactions(content: THUMBS_UP) {
-	totalCount
-}
+permalink
 repository {
 	isFork
 	name
 	owner {
 		login
 	}
+	url
 	viewerPermission
 }
+`;
+const gqlPullRequestFragment = `
+${gqlPullRequestLiteFragment}
+additions
+assignees(first: 10) {
+	nodes {
+		login
+		avatarUrl(size: $avatarSize)
+		url
+	}
+}
+checksUrl
+deletions
+isDraft
+mergeable
+mergedBy {
+	login
+}
 reviewDecision
+latestReviews(first: 10) {
+	nodes {
+		author {
+			login
+			avatarUrl(size: $avatarSize)
+			url
+		}
+		state
+	}
+}
 reviewRequests(first: 10) {
 	nodes {
 		asCodeOwner
@@ -137,76 +144,51 @@ reviewRequests(first: 10) {
 		requestedReviewer {
 			... on User {
 				login
-				avatarUrl
+				avatarUrl(size: $avatarSize)
 				url
 			}
 		}
 	}
 }
-latestReviews (first: 10) {
-	nodes {
-		author {
-			login
-			avatarUrl
-			url
-		}
-		state
-	}
+statusCheckRollup {
+	state
 }
 totalCommentsCount
-commits(last: 1) {
-	nodes {
-		commit {
-			oid
-			statusCheckRollup {
-				state
-			}
-		}
-	}
-}
+viewerCanUpdate
 `;
 
-const issueNodeProperties = `
-... on Issue {
-	assignees(first: 100) {
-		nodes {
-			login
-			url
-			avatarUrl
-		}
-	}
-	author {
+const gqIssueFragment = `
+${gqlIssueOrPullRequestFragment}
+assignees(first: 100) {
+	nodes {
 		login
-		avatarUrl
 		url
+		avatarUrl(size: $avatarSize)
 	}
-	comments {
-	  totalCount
-	}
-	id
-	number
-	title
+}
+author {
+	login
+	avatarUrl
 	url
-	createdAt
-	closedAt
-	closed
-	updatedAt
-	labels(first: 20) {
-		nodes {
-			color
-			name
-		}
-	}
-	reactions(content: THUMBS_UP) {
-	  totalCount
-	}
-	repository {
+}
+comments {
+	totalCount
+}
+labels(first: 20) {
+	nodes {
+		color
 		name
-		owner {
-			login
-		}
-		viewerPermission
 	}
+}
+reactions(content: THUMBS_UP) {
+	totalCount
+}
+repository {
+	name
+	owner {
+		login
+	}
+	viewerPermission
 }
 `;
 
@@ -583,24 +565,10 @@ export class GitHubApi implements Disposable {
 		issueOrPullRequest(number: $number) {
 			__typename
 			... on Issue {
-				createdAt
-				closed
-				closedAt
-				id
-				title
-				updatedAt
-				url
-				state
+				${gqlIssueOrPullRequestFragment}
 			}
 			... on PullRequest {
-				createdAt
-				closed
-				closedAt
-				id
-				title
-				updatedAt
-				url
-				state
+				${gqlIssueOrPullRequestFragment}
 			}
 		}
 	}
@@ -624,8 +592,8 @@ export class GitHubApi implements Disposable {
 
 			return {
 				provider: provider,
-				type: issue.type,
-				id: String(number),
+				type: issue.__typename === 'PullRequest' ? 'pullrequest' : 'issue',
+				id: String(issue.number),
 				nodeId: issue.id,
 				createdDate: new Date(issue.createdAt),
 				updatedDate: new Date(issue.updatedAt),
@@ -633,8 +601,68 @@ export class GitHubApi implements Disposable {
 				closed: issue.closed,
 				closedDate: issue.closedAt == null ? undefined : new Date(issue.closedAt),
 				url: issue.url,
-				state: fromGitHubPullRequestState(issue.state),
+				state: fromGitHubIssueOrPullRequestState(issue.state),
 			};
+		} catch (ex) {
+			if (ex instanceof ProviderRequestNotFoundError) return undefined;
+
+			throw this.handleException(ex, provider, scope);
+		}
+	}
+
+	@debug<GitHubApi['getPullRequest']>({ args: { 0: p => p.name, 1: '<token>' } })
+	async getPullRequest(
+		provider: Provider,
+		token: string,
+		owner: string,
+		repo: string,
+		number: number,
+		options?: {
+			baseUrl?: string;
+			avatarSize?: number;
+		},
+	): Promise<PullRequest | undefined> {
+		const scope = getLogScope();
+
+		interface QueryResult {
+			repository:
+				| {
+						pullRequest: GitHubPullRequestLite | null | undefined;
+				  }
+				| null
+				| undefined;
+		}
+
+		try {
+			const query = `query getPullRequest(
+	$owner: String!
+	$repo: String!
+	$number: Int!
+	$avatarSize: Int
+) {
+	repository(name: $repo, owner: $owner) {
+		pullRequest(number: $number) {
+			${gqlPullRequestFragment}
+		}
+	}
+}`;
+
+			const rsp = await this.graphql<QueryResult>(
+				provider,
+				token,
+				query,
+				{
+					...options,
+					owner: owner,
+					repo: repo,
+					number: number,
+				},
+				scope,
+			);
+
+			if (rsp?.repository?.pullRequest == null) return undefined;
+
+			return fromGitHubPullRequestLite(rsp.repository.pullRequest, provider);
 		} catch (ex) {
 			if (ex instanceof ProviderRequestNotFoundError) return undefined;
 
@@ -663,7 +691,7 @@ export class GitHubApi implements Disposable {
 						ref:
 							| {
 									associatedPullRequests?: {
-										nodes?: GitHubPullRequest[];
+										nodes?: GitHubPullRequestLite[];
 									};
 							  }
 							| null
@@ -686,47 +714,7 @@ export class GitHubApi implements Disposable {
 		ref(qualifiedName: $branch) {
 			associatedPullRequests(first: $limit, orderBy: {field: UPDATED_AT, direction: DESC}, states: $include) {
 				nodes {
-					author {
-						login
-						avatarUrl(size: $avatarSize)
-						url
-					}
-					createdAt
-					permalink
-					number
-					id
-					title
-					state
-					updatedAt
-					closedAt
-					mergedAt
-					baseRefName
-					baseRefOid
-					baseRepository {
-						name
-						owner {
-							login
-						}
-						url
-					}
-					headRefName
-					headRefOid
-					headRepository {
-						name
-						owner {
-							login
-						}
-						url
-					}
-					repository {
-						isFork
-						name
-						owner {
-							login
-						}
-						viewerPermission
-					}
-					isCrossRepository
+					${gqlPullRequestLiteFragment}
 				}
 			}
 		}
@@ -763,7 +751,7 @@ export class GitHubApi implements Disposable {
 				);
 			}
 
-			return fromGitHubPullRequest(prs[0], provider);
+			return fromGitHubPullRequestLite(prs[0], provider);
 		} catch (ex) {
 			if (ex instanceof ProviderRequestNotFoundError) return undefined;
 
@@ -791,7 +779,7 @@ export class GitHubApi implements Disposable {
 				| {
 						object?: {
 							associatedPullRequests?: {
-								nodes?: GitHubPullRequest[];
+								nodes?: GitHubPullRequestLite[];
 							};
 						};
 				  }
@@ -811,47 +799,7 @@ export class GitHubApi implements Disposable {
 			... on Commit {
 				associatedPullRequests(first: 2, orderBy: {field: UPDATED_AT, direction: DESC}) {
 					nodes {
-						author {
-							login
-							avatarUrl(size: $avatarSize)
-							url
-						}
-						createdAt
-						permalink
-						number
-						id
-						title
-						state
-						updatedAt
-						closedAt
-						mergedAt
-						baseRefName
-						baseRefOid
-						baseRepository {
-							name
-							owner {
-								login
-							}
-							url
-						}
-						headRefName
-						headRefOid
-						headRepository {
-							name
-							owner {
-								login
-							}
-							url
-						}
-						repository {
-							name
-							isFork
-							owner {
-								login
-							}
-							viewerPermission
-						}
-						isCrossRepository
+						${gqlPullRequestLiteFragment}
 					}
 				}
 			}
@@ -888,7 +836,7 @@ export class GitHubApi implements Disposable {
 				);
 			}
 
-			return fromGitHubPullRequest(prs[0], provider);
+			return fromGitHubPullRequestLite(prs[0], provider);
 		} catch (ex) {
 			if (ex instanceof ProviderRequestNotFoundError) return undefined;
 
@@ -2681,11 +2629,16 @@ export class GitHubApi implements Disposable {
 		}
 	}
 
-	private handleException(ex: Error, provider: Provider | undefined, scope: LogScope | undefined): Error {
+	private handleException(
+		ex: Error,
+		provider: Provider | undefined,
+		scope: LogScope | undefined,
+		silent?: boolean,
+	): Error {
 		Logger.error(ex, scope);
 		// debugger;
 
-		if (ex instanceof AuthenticationError) {
+		if (ex instanceof AuthenticationError && !silent) {
 			void this.showAuthenticationErrorMessage(ex, provider);
 		}
 		return ex;
@@ -2758,60 +2711,72 @@ export class GitHubApi implements Disposable {
 	async searchMyPullRequests(
 		provider: Provider,
 		token: string,
-		options?: { search?: string; user?: string; repos?: string[]; baseUrl?: string },
+		options?: {
+			search?: string;
+			user?: string;
+			repos?: string[];
+			baseUrl?: string;
+			avatarSize?: number;
+			silent?: boolean;
+		},
 		cancellation?: CancellationToken,
 	): Promise<SearchedPullRequest[]> {
 		const scope = getLogScope();
 
+		if (configuration.get('launchpad.experimental.queryUseInvolvesFilter') ?? false) {
+			return this.searchMyInvolvedPullRequests(provider, token, options, cancellation);
+		}
+
+		const limit = Math.min(100, configuration.get('launchpad.experimental.queryLimit') ?? 100);
+
 		interface SearchResult {
-			related: {
-				nodes: GitHubDetailedPullRequest[];
-			};
 			authored: {
-				nodes: GitHubDetailedPullRequest[];
+				nodes: GitHubPullRequest[];
 			};
 			assigned: {
-				nodes: GitHubDetailedPullRequest[];
+				nodes: GitHubPullRequest[];
 			};
 			reviewRequested: {
-				nodes: GitHubDetailedPullRequest[];
+				nodes: GitHubPullRequest[];
 			};
 			mentioned: {
-				nodes: GitHubDetailedPullRequest[];
+				nodes: GitHubPullRequest[];
 			};
 		}
+
 		try {
-			const query = `query searchPullRequests(
+			const query = `query searchMyPullRequests(
 	$authored: String!
 	$assigned: String!
 	$reviewRequested: String!
 	$mentioned: String!
+	$avatarSize: Int
 ) {
-	authored: search(first: 100, query: $authored, type: ISSUE) {
+	authored: search(first: ${limit}, query: $authored, type: ISSUE) {
 		nodes {
 			...on PullRequest {
-				${prNodeProperties}
+				${gqlPullRequestFragment}
 			}
 		}
 	}
-	assigned: search(first: 100, query: $assigned, type: ISSUE) {
+	assigned: search(first: ${limit}, query: $assigned, type: ISSUE) {
 		nodes {
 			...on PullRequest {
-				${prNodeProperties}
+				${gqlPullRequestFragment}
 			}
 		}
 	}
-	reviewRequested: search(first: 100, query: $reviewRequested, type: ISSUE) {
+	reviewRequested: search(first: ${limit}, query: $reviewRequested, type: ISSUE) {
 		nodes {
 			...on PullRequest {
-				${prNodeProperties}
+				${gqlPullRequestFragment}
 			}
 		}
 	}
-	mentioned: search(first: 100, query: $mentioned, type: ISSUE) {
+	mentioned: search(first: ${limit}, query: $mentioned, type: ISSUE) {
 		nodes {
 			...on PullRequest {
-				${prNodeProperties}
+				${gqlPullRequestFragment}
 			}
 		}
 	}
@@ -2829,7 +2794,7 @@ export class GitHubApi implements Disposable {
 			}
 
 			const baseFilters = 'is:pr is:open archived:false';
-			const resp = await this.graphql<SearchResult>(
+			const rsp = await this.graphql<SearchResult>(
 				provider,
 				token,
 				query,
@@ -2839,31 +2804,144 @@ export class GitHubApi implements Disposable {
 					reviewRequested: `${search} ${baseFilters} review-requested:@me`.trim(),
 					mentioned: `${search} ${baseFilters} mentions:@me`.trim(),
 					baseUrl: options?.baseUrl,
+					avatarSize: options?.avatarSize,
 				},
 				scope,
 				cancellation,
 			);
-			if (resp === undefined) return [];
+			if (rsp == null) return [];
 
-			function toQueryResult(pr: GitHubDetailedPullRequest, reason?: string): SearchedPullRequest {
+			function toQueryResult(pr: GitHubPullRequest, reason?: string): SearchedPullRequest {
 				return {
-					pullRequest: fromGitHubPullRequestDetailed(pr, provider),
+					pullRequest: fromGitHubPullRequest(pr, provider),
 					reasons: reason ? [reason] : [],
 				};
 			}
 
 			const results: SearchedPullRequest[] = uniqueWithReasons(
 				[
-					...resp.assigned.nodes.map(pr => toQueryResult(pr, 'assigned')),
-					...resp.reviewRequested.nodes.map(pr => toQueryResult(pr, 'review-requested')),
-					...resp.mentioned.nodes.map(pr => toQueryResult(pr, 'mentioned')),
-					...resp.authored.nodes.map(pr => toQueryResult(pr, 'authored')),
+					...rsp.assigned.nodes.map(pr => toQueryResult(pr, 'assigned')),
+					...rsp.reviewRequested.nodes.map(pr => toQueryResult(pr, 'review-requested')),
+					...rsp.mentioned.nodes.map(pr => toQueryResult(pr, 'mentioned')),
+					...rsp.authored.nodes.map(pr => toQueryResult(pr, 'authored')),
 				],
 				r => r.pullRequest.url,
 			);
 			return results;
 		} catch (ex) {
-			throw this.handleException(ex, provider, scope);
+			throw this.handleException(ex, provider, scope, options?.silent);
+		}
+	}
+
+	@debug<GitHubApi['searchMyInvolvedPullRequests']>({ args: { 0: p => p.name, 1: '<token>' } })
+	private async searchMyInvolvedPullRequests(
+		provider: Provider,
+		token: string,
+		options?: {
+			search?: string;
+			user?: string;
+			repos?: string[];
+			baseUrl?: string;
+			avatarSize?: number;
+			silent?: boolean;
+		},
+		cancellation?: CancellationToken,
+	): Promise<SearchedPullRequest[]> {
+		const scope = getLogScope();
+
+		const limit = Math.min(100, configuration.get('launchpad.experimental.queryLimit') ?? 100);
+
+		try {
+			interface SearchResult {
+				search: {
+					issueCount: number;
+					nodes: GitHubPullRequest[];
+				};
+				viewer: {
+					login: string;
+				};
+			}
+
+			const query = `query searchMyPullRequests(
+	$search: String!
+	$avatarSize: Int
+) {
+	search(first: ${limit}, query: $search, type: ISSUE) {
+		issueCount
+		nodes {
+			...on PullRequest {
+				${gqlPullRequestFragment}
+			}
+		}
+	}
+	viewer {
+		login
+	}
+}`;
+
+			let search = options?.search?.trim() ?? '';
+
+			if (options?.user) {
+				search += ` user:${options.user}`;
+			}
+
+			if (options?.repos?.length) {
+				search += ` repo:${options.repos.join(' repo:')}`;
+			}
+
+			// Hack for now, ultimately this should be passed in
+			const ignoredRepos = configuration.get('launchpad.ignoredRepositories') ?? [];
+			if (ignoredRepos.length) {
+				search += ` -repo:${ignoredRepos.join(' -repo:')}`;
+			}
+
+			// Hack for now, ultimately this should be passed in
+			const ignoredOrgs = configuration.get('launchpad.ignoredOrganizations') ?? [];
+			if (ignoredOrgs.length) {
+				search += ` -org:${ignoredOrgs.join(' -org:')}`;
+			}
+
+			const rsp = await this.graphql<SearchResult>(
+				provider,
+				token,
+				query,
+				{
+					search: `is:open is:pr involves:@me archived:false ${search}`.trim(),
+					baseUrl: options?.baseUrl,
+					avatarSize: options?.avatarSize,
+				},
+				scope,
+				cancellation,
+			);
+			if (rsp == null) return [];
+
+			const viewer = rsp.viewer.login;
+
+			function toQueryResult(pr: GitHubPullRequest): SearchedPullRequest {
+				const reasons = [];
+				if (pr.author.login === viewer) {
+					reasons.push('authored');
+				}
+				if (pr.assignees.nodes.some(a => a.login === viewer)) {
+					reasons.push('assigned');
+				}
+				if (pr.reviewRequests.nodes.some(r => r.requestedReviewer?.login === viewer)) {
+					reasons.push('review-requested');
+				}
+				if (reasons.length === 0) {
+					reasons.push('mentioned');
+				}
+
+				return {
+					pullRequest: fromGitHubPullRequest(pr, provider),
+					reasons: reasons,
+				};
+			}
+
+			const results: SearchedPullRequest[] = rsp.search.nodes.map(pr => toQueryResult(pr));
+			return results;
+		} catch (ex) {
+			throw this.handleException(ex, provider, scope, options?.silent);
 		}
 	}
 
@@ -2871,43 +2949,48 @@ export class GitHubApi implements Disposable {
 	async searchMyIssues(
 		provider: Provider,
 		token: string,
-		options?: { search?: string; user?: string; repos?: string[]; baseUrl?: string },
+		options?: { search?: string; user?: string; repos?: string[]; baseUrl?: string; avatarSize?: number },
 		cancellation?: CancellationToken,
 	): Promise<SearchedIssue[] | undefined> {
 		const scope = getLogScope();
+
 		interface SearchResult {
-			related: {
-				nodes: GitHubIssueDetailed[];
-			};
 			authored: {
-				nodes: GitHubIssueDetailed[];
+				nodes: GitHubIssue[];
 			};
 			assigned: {
-				nodes: GitHubIssueDetailed[];
+				nodes: GitHubIssue[];
 			};
 			mentioned: {
-				nodes: GitHubIssueDetailed[];
+				nodes: GitHubIssue[];
 			};
 		}
 
-		const query = `query searchIssues(
+		const query = `query searchMyIssues(
 				$authored: String!
 				$assigned: String!
 				$mentioned: String!
+				$avatarSize: Int
 			) {
 				authored: search(first: 100, query: $authored, type: ISSUE) {
 					nodes {
-						${issueNodeProperties}
+						... on Issue {
+							${gqIssueFragment}
+						}
 					}
 				}
 				assigned: search(first: 100, query: $assigned, type: ISSUE) {
 					nodes {
-						${issueNodeProperties}
+						... on Issue {
+							${gqIssueFragment}
+						}
 					}
 				}
 				mentioned: search(first: 100, query: $mentioned, type: ISSUE) {
 					nodes {
-						${issueNodeProperties}
+						... on Issue {
+							${gqIssueFragment}
+						}
 					}
 				}
 			}`;
@@ -2925,7 +3008,7 @@ export class GitHubApi implements Disposable {
 
 		const baseFilters = 'type:issue is:open archived:false';
 		try {
-			const resp = await this.graphql<SearchResult>(
+			const rsp = await this.graphql<SearchResult>(
 				provider,
 				token,
 				query,
@@ -2934,28 +3017,88 @@ export class GitHubApi implements Disposable {
 					assigned: `${search} ${baseFilters} assignee:@me`.trim(),
 					mentioned: `${search} ${baseFilters} mentions:@me`.trim(),
 					baseUrl: options?.baseUrl,
+					avatarSize: options?.avatarSize,
 				},
 				scope,
 				cancellation,
 			);
 
-			function toQueryResult(issue: GitHubIssueDetailed, reason?: string): SearchedIssue {
+			function toQueryResult(issue: GitHubIssue, reason?: string): SearchedIssue {
 				return {
-					issue: fromGitHubIssueDetailed(issue, provider),
+					issue: fromGitHubIssue(issue, provider),
 					reasons: reason ? [reason] : [],
 				};
 			}
 
-			if (resp === undefined) return [];
+			if (rsp == null) return [];
 
 			const results: SearchedIssue[] = uniqueWithReasons(
 				[
-					...resp.assigned.nodes.map(pr => toQueryResult(pr, 'assigned')),
-					...resp.mentioned.nodes.map(pr => toQueryResult(pr, 'mentioned')),
-					...resp.authored.nodes.map(pr => toQueryResult(pr, 'authored')),
+					...rsp.assigned.nodes.map(pr => toQueryResult(pr, 'assigned')),
+					...rsp.mentioned.nodes.map(pr => toQueryResult(pr, 'mentioned')),
+					...rsp.authored.nodes.map(pr => toQueryResult(pr, 'authored')),
 				],
 				r => r.issue.url,
 			);
+			return results;
+		} catch (ex) {
+			throw this.handleException(ex, provider, scope);
+		}
+	}
+
+	@debug<GitHubApi['searchPullRequests']>({ args: { 0: p => p.name, 1: '<token>' } })
+	async searchPullRequests(
+		provider: Provider,
+		token: string,
+		options?: { search?: string; user?: string; repos?: string[]; baseUrl?: string; avatarSize?: number },
+		cancellation?: CancellationToken,
+	): Promise<PullRequest[]> {
+		const scope = getLogScope();
+
+		interface SearchResult {
+			nodes: GitHubPullRequest[];
+		}
+
+		try {
+			const query = `query searchPullRequests(
+	$searchQuery: String!
+	$avatarSize: Int
+) {
+	search(first: 100, query: $searchQuery, type: ISSUE) {
+		nodes {
+			...on PullRequest {
+				${gqlPullRequestFragment}
+			}
+		}
+	}
+}`;
+
+			let search = options?.search?.trim() ?? '';
+
+			if (options?.user) {
+				search += ` user:${options.user}`;
+			}
+
+			if (options?.repos != null && options.repos.length > 0) {
+				const repo = ' repo:';
+				search += `${repo}${options.repos.join(repo)}`;
+			}
+
+			const rsp = await this.graphql<SearchResult>(
+				provider,
+				token,
+				query,
+				{
+					searchQuery: `is:pr is:open archived:false ${search.trim()}`,
+					baseUrl: options?.baseUrl,
+					avatarSize: options?.avatarSize,
+				},
+				scope,
+				cancellation,
+			);
+			if (rsp == null) return [];
+
+			const results = rsp.nodes.map(pr => fromGitHubPullRequest(pr, provider));
 			return results;
 		} catch (ex) {
 			throw this.handleException(ex, provider, scope);
@@ -2973,7 +3116,7 @@ export class GitHubApi implements Disposable {
 	): Promise<boolean> {
 		const scope = getLogScope();
 		interface QueryResult {
-			pullRequest: GitHubPullRequest | null | undefined;
+			pullRequest: GitHubPullRequestLite | null | undefined;
 		}
 
 		let githubMergeStrategy;
@@ -3007,7 +3150,7 @@ export class GitHubApi implements Disposable {
 	}
 }`;
 
-			const resp = await this.graphql<QueryResult>(
+			const rsp = await this.graphql<QueryResult>(
 				provider,
 				token,
 				query,
@@ -3021,7 +3164,7 @@ export class GitHubApi implements Disposable {
 				cancellation,
 			);
 
-			return resp?.pullRequest?.id === nodeId;
+			return rsp?.pullRequest?.id === nodeId;
 		} catch (ex) {
 			throw this.handleException(ex, provider, scope);
 		}

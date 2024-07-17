@@ -4,6 +4,7 @@ import { customElement, property, query, state } from 'lit/decorators.js';
 import { map } from 'lit/directives/map.js';
 import { repeat } from 'lit/directives/repeat.js';
 import { when } from 'lit/directives/when.js';
+import { urls } from '../../../../../constants';
 import type { GitFileChangeShape } from '../../../../../git/models/file';
 import type { DraftRole, DraftVisibility } from '../../../../../gk/models/drafts';
 import type {
@@ -53,6 +54,13 @@ export interface CreatePatchUpdateSelectionEventDetail {
 	role: Exclude<DraftRole, 'owner'> | 'remove';
 }
 
+interface GenerateState {
+	cancelled?: boolean;
+	error?: { message: string };
+	title?: string;
+	description?: string;
+}
+
 // Can only import types from 'vscode'
 const BesideViewColumn = -2; /*ViewColumn.Beside*/
 
@@ -61,6 +69,12 @@ export class GlPatchCreate extends GlTreeBase {
 	@property({ type: Object }) state?: Serialized<State>;
 
 	@property({ type: Boolean }) review = false;
+
+	@property({ type: Object })
+	generate?: GenerateState;
+
+	@state()
+	generateBusy = false;
 
 	// @state()
 	// patchTitle = this.create.title ?? '';
@@ -73,6 +87,9 @@ export class GlPatchCreate extends GlTreeBase {
 
 	@query('#desc')
 	descInput!: HTMLInputElement;
+
+	@query('#generate-ai')
+	generateAiButton!: HTMLElement;
 
 	@state()
 	validityMessage?: string;
@@ -125,6 +142,12 @@ export class GlPatchCreate extends GlTreeBase {
 		defineGkElement(Avatar, Button, Menu, MenuItem, Popover);
 	}
 
+	override updated(changedProperties: Map<string, any>) {
+		if (changedProperties.has('generate')) {
+			this.generateBusy = false;
+			this.generateAiButton.scrollIntoView();
+		}
+	}
 	protected override firstUpdated() {
 		window.requestAnimationFrame(() => {
 			this.titleInput.focus();
@@ -147,7 +170,7 @@ export class GlPatchCreate extends GlTreeBase {
 				</div>
 				<div class="user-selection__info">
 					<div class="user-selection__name">
-						${userSelection.member.name ?? userSelection.member.username}
+						${userSelection.member.name ?? userSelection.member.username ?? 'Unknown'}
 					</div>
 				</div>
 				<div class="user-selection__actions">
@@ -257,7 +280,7 @@ export class GlPatchCreate extends GlTreeBase {
 						${this.renderUserSelectionList()}
 					`,
 				)}
-				<div class="message-input">
+				<div class="message-input message-input--with-menu">
 					<input
 						id="title"
 						type="text"
@@ -265,9 +288,38 @@ export class GlPatchCreate extends GlTreeBase {
 						placeholder="Title (required)"
 						maxlength="100"
 						.value=${this.create.title ?? ''}
+						?disabled=${this.generateBusy}
 						@input=${(e: InputEvent) => this.onDebounceTitleInput(e)}
 					/>
+					${when(
+						this.state?.orgSettings.ai === true,
+						() =>
+							html`<div class="message-input__menu">
+								<gl-button
+									id="generate-ai"
+									appearance="toolbar"
+									density="compact"
+									tooltip="Generate Title and Description..."
+									@click=${(e: MouseEvent) => this.onGenerateTitleClick(e)}
+									?disabled=${this.generateBusy}
+									><code-icon
+										icon=${this.generateBusy ? 'loading' : 'sparkle'}
+										modifier="${this.generateBusy ? 'spin' : ''}"
+									></code-icon
+								></gl-button>
+							</div>`,
+					)}
 				</div>
+
+				${when(
+					this.generate?.error != null,
+					() => html`
+						<div class="alert alert--error">
+							<code-icon icon="error"></code-icon>
+							<p class="alert__content">${this.generate!.error!.message ?? 'Error retrieving content'}</p>
+						</div>
+					`,
+				)}
 				<div class="message-input">
 					<textarea
 						id="desc"
@@ -275,6 +327,7 @@ export class GlPatchCreate extends GlTreeBase {
 						placeholder="Description (optional)"
 						maxlength="10000"
 						.value=${this.create.description ?? ''}
+						?disabled=${this.generateBusy}
 						@input=${(e: InputEvent) => this.onDebounceDescriptionInput(e)}
 					></textarea>
 				</div>
@@ -303,7 +356,7 @@ export class GlPatchCreate extends GlTreeBase {
 						html`<p class="h-deemphasize">
 							<code-icon icon="lock"></code-icon>
 							<a
-								href="https://www.gitkraken.com/solutions/cloud-patches"
+								href="${urls.cloudPatches}"
 								title="Learn more about ${draftNamePlural}"
 								aria-label="Learn more about ${draftNamePlural}"
 								>${draftNamePlural}</a
@@ -322,7 +375,7 @@ export class GlPatchCreate extends GlTreeBase {
 							<code-icon icon="info"></code-icon>
 							Your
 							<a
-								href="https://www.gitkraken.com/solutions/cloud-patches"
+								href="${urls.cloudPatches}"
 								title="Learn more about ${draftNamePlural}"
 								aria-label="Learn more about ${draftNamePlural}"
 								>${draftName}</a
@@ -662,6 +715,15 @@ export class GlPatchCreate extends GlTreeBase {
 		this.fireMetadataUpdate();
 	}
 
+	private onGenerateTitleClick(_e: Event) {
+		this.generateBusy = true;
+		this.emit('gl-patch-generate-title', {
+			title: this.create.title!,
+			description: this.create.description,
+			visibility: this.create.visibility,
+		});
+	}
+
 	private fireMetadataUpdate() {
 		this.emit('gl-patch-create-update-metadata', {
 			title: this.create.title!,
@@ -785,6 +847,7 @@ declare global {
 		'gl-patch-file-open': CustomEvent<ExecuteFileActionParams>;
 		'gl-patch-file-stage': CustomEvent<ExecuteFileActionParams>;
 		'gl-patch-file-unstage': CustomEvent<ExecuteFileActionParams>;
+		'gl-patch-generate-title': CustomEvent<CreatePatchMetadataEventDetail>;
 		'gl-patch-create-invite-users': CustomEvent<undefined>;
 		'gl-patch-create-update-selection': CustomEvent<CreatePatchUpdateSelectionEventDetail>;
 		'gl-patch-create-cancelled': CustomEvent<undefined>;

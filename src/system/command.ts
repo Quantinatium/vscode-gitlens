@@ -9,7 +9,7 @@ import { isWebviewContext } from './webview';
 
 export type CommandCallback = Parameters<typeof commands.registerCommand>[1];
 
-type CommandConstructor = new (container: Container) => Command;
+type CommandConstructor = new (container: Container, ...args: any[]) => Command;
 const registrableCommands: CommandConstructor[] = [];
 
 export function command(): ClassDecorator {

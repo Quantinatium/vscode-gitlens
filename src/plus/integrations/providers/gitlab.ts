@@ -12,7 +12,10 @@ import type {
 import type { RepositoryMetadata } from '../../../git/models/repositoryMetadata';
 import { log } from '../../../system/decorators/log';
 import { ensurePaidPlan } from '../../utils';
-import type { IntegrationAuthenticationProviderDescriptor } from '../authentication/integrationAuthentication';
+import type {
+	IntegrationAuthenticationProviderDescriptor,
+	IntegrationAuthenticationService,
+} from '../authentication/integrationAuthentication';
 import type { SupportedIntegrationIds } from '../integration';
 import { HostingIntegration } from '../integration';
 import { HostingIntegrationId, providersMetadata, SelfHostedIntegrationId } from './models';
@@ -203,15 +206,21 @@ export class GitLabSelfHostedIntegration extends GitLabIntegrationBase<SelfHoste
 
 	constructor(
 		container: Container,
+		authenticationService: IntegrationAuthenticationService,
 		getProvidersApi: () => Promise<ProvidersApi>,
 		private readonly _domain: string,
 	) {
-		super(container, getProvidersApi);
+		super(container, authenticationService, getProvidersApi);
 	}
 
 	@log()
 	override async connect(): Promise<boolean> {
-		if (!(await ensurePaidPlan(this.container, `Rich integration with ${this.name} is a Pro feature.`))) {
+		if (
+			!(await ensurePaidPlan(this.container, `Rich integration with ${this.name} is a Pro feature.`, {
+				source: 'integrations',
+				detail: { action: 'connect', integration: this.id },
+			}))
+		) {
 			return false;
 		}
 
