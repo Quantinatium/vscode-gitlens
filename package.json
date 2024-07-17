@@ -1,3 +1,4 @@
+
 {
 	"name": "gitlens",
 	"displayName": "GitLens — Git supercharged",
@@ -7,8 +8,14 @@
 		"vscode": "^1.82.0"
 	},
 	"license": "SEE LICENSE IN LICENSE",
-	"publisher": "eamodio",
-	"author": {
+	"publisher": "quantinatium
+	",
+	"author"quantinatium"ai":
+	
+
+
+
+	: {
 		"name": "Eric Amodio",
 		"email": "eamodio@gmail.com"
 	},
@@ -17416,6 +17423,7 @@
 		"build:quick": "webpack --mode development --env skipLint",
 		"build:extension": "webpack --mode development --config-name extension:node",
 		"build:extension:browser": "webpack --mode development --config-name extension:webworker",
+
 		"build:webviews": "webpack --mode development --config-name webviews",
 		"build:icons": "yarn icons:svgo && yarn fantasticon && yarn icons:apply",
 		"build:tests": "tsc -p tsconfig.test.json && tsc-alias -p tsconfig.test.json",

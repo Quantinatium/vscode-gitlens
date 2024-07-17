@@ -2,6 +2,107 @@
 {
 	"version": "0.2.0",
 	"configurations": [
+
+
+
+
+
+		{
+			"name": "Electron Main",
+			"program": "${workspaceFolder}/main.js",
+			"request": "launch",
+			"runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron",
+			"skipFiles": [
+				"<node_internals>/**"
+			],
+			"type": "node"
+		},
+
+		{
+			"name": "Launch Chrome",
+			"request": "launch",
+			"type": "chrome",
+			"url": "http://localhost:8080",
+			"webRoot": "${workspaceFolder}"
+		},
+
+
+
+
+
+
+
+
+
+
+		out
+		{
+			"name": "Launch Edge",
+			"request": "launch",
+			"type": "msedge",
+			"url": "http://localhost:8080",
+			"webRoot": "${workspaceFolder}"
+		},
+		{
+			"name": "Launch Chrome",
+			"request": "launch",
+			"type": "chrome",
+			"url": "http://localhost:8080",
+			"webRoot": "${workspaceFolder}"
+		},
+		{
+			"name": "(gdb) Launch",
+			"type": "cppdbg",
+			"request": "launch",
+			"program": "enter program name, for example ${workspaceFolder}/a.out",
+			"args": [],
+			"stopAtEntry": false,
+			"cwd": "${fileDirname}",
+			"environment": [],
+			"externalConsole": false,
+			"MIMode": "gdb",
+			"setupCommands": [
+				{
+					"description": "Enable pretty-printing for gdb",
+					"text": "-enable-pretty-printing",
+					"ignoreFailures": true
+				},
+				{
+					"description": "Set Disassembly Flavor to Intel",
+					"text": "-gdb-set disassembly-flavor intel",
+					"ignoreFailures": true
+				}
+			]
+		}
+		{
+			"name": "Launch Chrome",
+			"request": "launch",
+			"type": "chrome",
+			"url": "http://localhost:80
+			80",
+			"webRoot": "${workspaceFolder}"
+		},
+		{
+			"name": "Electron Main",
+			"program": "${workspaceFolder}/main.js",
+			"request": "launch",
+			"runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron",
+			"skipFiles": [
+				"<node_internals>/**"
+			],
+			"type": "node"
+		},
+		{
+			"name": "Electron Main",
+			"program": "${workspaceFolder}/main.js",
+			"request": "launch",
+			"runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron",
+			"skipFiles": [
+				"<node_internals>/**"
+			],
+			"type": "node"
+		},
+
 		{
 			"name": "Run",
 			"type": "extensionHost",

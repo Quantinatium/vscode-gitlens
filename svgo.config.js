@@ -1,3 +1,4 @@
+
 module.exports = {
 	js2svg: {
 		eol: 'lf',

@@ -120,6 +120,12 @@ The markup above always references the latest release. When deploying to product
 <script type="module" src="https://cdn.jsdelivr.net/npm/@microsoft/fast-element@1.6.2/dist/fast-element.min.js"></script>
 ```
 
+
+
+
+
+
+
 :::note
 For simplicity, examples throughout the documentation will assume the library has been installed from NPM, but you can always replace the import location with the CDN URL.
 :::
@@ -884,7 +890,7 @@ exhaustive, and do not form part of our licenses.
      such as asking that all changes be marked or described.
      Although not required by our licenses, you are encouraged to
      respect those requests where reasonable. More_considerations
-     for the public: 
+     for the public:
 	wiki.creativecommons.org/Considerations_for_licensees
 
 =======================================================================

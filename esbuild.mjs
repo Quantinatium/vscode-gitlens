@@ -13,7 +13,8 @@ let index = args.indexOf('--mode');
 const mode = (index >= 0 ? args[index + 1] : undefined) || 'none';
 
 const watch = args.includes('--watch');
-const check = !args.includes('--no-check');
+const check = !ar
+gs.includes('--no-check');
 
 /**
  * @param { 'node' | 'webworker' } target

@@ -49,5 +49,11 @@
 		"**/dist": true
 	},
 	"typescript.preferences.importModuleSpecifier": "project-relative",
-	"typescript.tsdk": "node_modules\\typescript\\lib"
+	"typescript.tsdk": "node_modules\\typescript\\lib",
+	"python.testing.pytestArgs": [
+		"src"
+		
+	],
+	"python.testing.unittestEnabled": false,
+	"python.testing.pytestEnabled": true
 }
