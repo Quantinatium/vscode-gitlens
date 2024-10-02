@@ -1,4 +1,4 @@
-name: Publish pre-release
+name: Publish cd-pre.yml pre-release
 
 on:
     schedule:
